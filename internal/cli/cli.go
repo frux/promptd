@@ -17,6 +17,7 @@ import (
 
 	"github.com/frux/promptd/internal/buildinfo"
 	"github.com/frux/promptd/internal/config"
+	"github.com/frux/promptd/internal/control"
 	"github.com/frux/promptd/internal/daemon"
 	"github.com/frux/promptd/internal/store"
 )
@@ -64,6 +65,8 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	statePath := flags.String("state", defaultStatePath(stderr), "path to SQLite state database")
+	socketPath := flags.String("socket", "", "path to daemon control socket (default: next to state database)")
+	offline := flags.Bool("offline", false, "read the state database without contacting the daemon")
 	format := flags.String("format", "text", "output format: text or json")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -76,39 +79,14 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	ctx := context.Background()
-	state, err := store.OpenReadOnly(ctx, *statePath)
+	resolvedSocketPath := *socketPath
+	if resolvedSocketPath == "" {
+		resolvedSocketPath = control.DefaultSocketPath(*statePath)
+	}
+	rows, err := loadStatus(context.Background(), *statePath, resolvedSocketPath, *offline)
 	if err != nil {
 		fmt.Fprintf(stderr, "status failed: %v\n", err)
 		return 1
-	}
-	defer state.Close()
-	statuses, err := state.ListJobStatuses(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "status failed: %v\n", err)
-		return 1
-	}
-
-	rows := make([]statusRow, 0, len(statuses))
-	for _, status := range statuses {
-		row := statusRow{ID: status.Job.ID, Enabled: status.Job.Enabled}
-		if status.Job.Enabled {
-			row.NextRun = status.Scheduler.NextRun
-		}
-		if status.LastRun != nil {
-			run := status.LastRun
-			row.LastRun = &statusRun{
-				ID:          run.ID,
-				Status:      run.Status,
-				ScheduledAt: run.ScheduledAt,
-				StartedAt:   run.StartedAt,
-				FinishedAt:  run.FinishedAt,
-				ExitCode:    run.ExitCode,
-				Error:       run.Error,
-				LogPath:     run.LogPath,
-			}
-		}
-		rows = append(rows, row)
 	}
 
 	if *format == "json" {
@@ -127,25 +105,30 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-type statusRow struct {
-	ID      string     `json:"id"`
-	Enabled bool       `json:"enabled"`
-	NextRun *time.Time `json:"next_run,omitempty"`
-	LastRun *statusRun `json:"last_run,omitempty"`
+func loadStatus(ctx context.Context, statePath, socketPath string, offline bool) ([]control.JobStatus, error) {
+	if !offline {
+		response, err := control.NewClient(socketPath).Status(ctx)
+		if err == nil {
+			return response.Jobs, nil
+		}
+		if !errors.Is(err, control.ErrUnavailable) {
+			return nil, err
+		}
+	}
+
+	state, err := store.OpenReadOnly(ctx, statePath)
+	if err != nil {
+		return nil, err
+	}
+	defer state.Close()
+	statuses, err := state.ListJobStatuses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return control.StatusFromStore(statuses).Jobs, nil
 }
 
-type statusRun struct {
-	ID          int64           `json:"id"`
-	Status      store.RunStatus `json:"status"`
-	ScheduledAt *time.Time      `json:"scheduled_at,omitempty"`
-	StartedAt   *time.Time      `json:"started_at,omitempty"`
-	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
-	ExitCode    *int            `json:"exit_code,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	LogPath     string          `json:"log_path,omitempty"`
-}
-
-func writeTextStatus(output io.Writer, rows []statusRow) error {
+func writeTextStatus(output io.Writer, rows []control.JobStatus) error {
 	if len(rows) == 0 {
 		_, err := fmt.Fprintln(output, "no registered jobs")
 		return err
@@ -211,6 +194,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	configPath := flags.String("config", defaultConfigPath(stderr), "path to config file")
 	statePath := flags.String("state", defaultStatePath(stderr), "path to SQLite state database")
 	logDir := flags.String("log-dir", "", "directory for per-run logs (default: next to state database)")
+	socketPath := flags.String("socket", "", "path to control socket (default: next to state database)")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -237,7 +221,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	if resolvedLogDir == "" {
 		resolvedLogDir = filepath.Join(filepath.Dir(*statePath), "logs")
 	}
-	if err := daemon.Run(ctx, *configPath, *statePath, resolvedLogDir, slog.New(handler)); err != nil {
+	resolvedSocketPath := *socketPath
+	if resolvedSocketPath == "" {
+		resolvedSocketPath = control.DefaultSocketPath(*statePath)
+	}
+	if err := daemon.Run(ctx, *configPath, *statePath, resolvedLogDir, resolvedSocketPath, slog.New(handler)); err != nil {
 		fmt.Fprintf(stderr, "daemon failed: %v\n", err)
 		return 1
 	}

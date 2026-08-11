@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/frux/promptd/internal/control"
 	"github.com/frux/promptd/internal/store"
 )
 
@@ -93,7 +96,7 @@ func TestStatusJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("Run() code = %d, stderr = %s", code, stderr.String())
 	}
-	var rows []statusRow
+	var rows []control.JobStatus
 	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
 		t.Fatalf("decode status JSON: %v", err)
 	}
@@ -114,6 +117,60 @@ func TestStatusMissingDatabaseDoesNotCreateIt(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("database was created: %v", err)
+	}
+}
+
+func TestStatusPrefersRunningDaemon(t *testing.T) {
+	offlinePath := seedStatusStore(t)
+	directory := t.TempDir()
+	live, err := store.Open(context.Background(), filepath.Join(directory, "live.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	if err := live.ReconcileJobs(context.Background(), []store.JobSpec{{
+		ID: "live-job", ConfigHash: "live", ScheduleHash: "live", ConfigJSON: []byte(`{}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	socketDirectory, err := os.MkdirTemp("/tmp", "promptd-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDirectory) })
+	socketPath := filepath.Join(socketDirectory, "p.sock")
+	server, err := control.Start(socketPath, live, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+		if err := <-server.Done(); err != nil {
+			t.Errorf("Serve() error = %v", err)
+		}
+	}()
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"status", "--state", offlinePath, "--socket", socketPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %s", code, stderr.String())
+	}
+	if output := stdout.String(); !strings.Contains(output, "live-job") || strings.Contains(output, "alpha") {
+		t.Fatalf("status output = %q", output)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"status", "--state", offlinePath, "--socket", socketPath, "--offline"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("offline Run() code = %d, stderr = %s", code, stderr.String())
+	}
+	if output := stdout.String(); !strings.Contains(output, "alpha") || strings.Contains(output, "live-job") {
+		t.Fatalf("offline status output = %q", output)
 	}
 }
 

@@ -111,13 +111,24 @@ jobs:
 	}
 	statePath := filepath.Join(dir, "state", "promptd.db")
 	logDir := filepath.Join(dir, "logs")
+	socketDirectory, err := os.MkdirTemp("/tmp", "promptd-daemon-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDirectory) })
+	socketPath := filepath.Join(socketDirectory, "p.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan error, 1)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go func() { finished <- Run(ctx, configPath, statePath, logDir, logger) }()
+	go func() { finished <- Run(ctx, configPath, statePath, logDir, socketPath, logger) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		select {
+		case err := <-finished:
+			t.Fatalf("daemon stopped before scheduled command ran: %v", err)
+		default:
+		}
 		if _, err := os.Stat(marker); err == nil {
 			break
 		}

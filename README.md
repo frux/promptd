@@ -55,13 +55,15 @@ systemd / launchd / container runtime
 ```text
 promptd version
 promptd validate --config path/to/config.yaml
-promptd daemon --config path/to/config.yaml --state path/to/promptd.db --log-dir path/to/logs
+promptd daemon --config path/to/config.yaml --state path/to/promptd.db --log-dir path/to/logs --socket path/to/promptd.sock
 promptd status --state path/to/promptd.db
 ```
 
-The daemon reloads its configuration on `SIGHUP`. An invalid reload is rejected while the last valid configuration remains active. Its default per-user state database is `~/.local/state/promptd/promptd.db` on Linux; logs default to the adjacent `logs/` directory.
+The daemon reloads its configuration on `SIGHUP`. An invalid reload is rejected while the last valid configuration remains active. Its default per-user state database is `~/.local/state/promptd/promptd.db` on Linux; logs default to the adjacent `logs/` directory and the control socket to the adjacent `promptd.sock`.
 
-`promptd status` reads the state database without modifying it and shows every registered job, including jobs disabled after removal from the current configuration. The table includes the next scheduled occurrence and latest run result. Use `--format json` for machine-readable output.
+`promptd status` asks the running daemon for a consistent status view over its owner-only Unix socket. If the daemon is unavailable, it falls back to opening the state database read-only. It shows every registered job, including jobs disabled after removal from the current configuration, plus the next scheduled occurrence and latest run result. Use `--format json` for machine-readable output or `--offline` to skip the control API explicitly.
+
+The versioned local control API currently exposes `GET /v1/status` over the Unix socket. The daemon refuses to replace a regular file or an active socket and creates its socket with mode `0600`.
 
 Interval schedules stay anchored to their persisted `next_run`, so daemon restarts do not introduce drift. After downtime, `misfire: skip` advances to the next future occurrence, while `misfire: run_once` coalesces missed occurrences into one run. `overlap: skip` records overlapping occurrences as skipped; `overlap: queue_one` retains at most one pending run.
 
@@ -164,7 +166,7 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] Claude Code runner
 - [ ] Additional popular agent runners
 - [x] Cron/interval scheduler and runner orchestration
-- [ ] Unix socket control API
+- [x] Unix socket control API
 - [x] `promptd status` overview for all registered jobs
 - [ ] `promptd setup` and verified shell bootstrap
 - [ ] User and system systemd integration

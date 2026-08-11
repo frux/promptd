@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/frux/promptd/internal/config"
+	"github.com/frux/promptd/internal/control"
 	"github.com/frux/promptd/internal/runner"
 	"github.com/frux/promptd/internal/scheduler"
 	"github.com/frux/promptd/internal/store"
@@ -21,7 +22,7 @@ import (
 
 // Run loads the configuration, schedules jobs, and keeps the process alive
 // until cancellation.
-func Run(ctx context.Context, configPath, statePath, logDir string, logger *slog.Logger) error {
+func Run(ctx context.Context, configPath, statePath, logDir, socketPath string, logger *slog.Logger) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -54,6 +55,17 @@ func Run(ctx context.Context, configPath, statePath, logDir string, logger *slog
 	if err != nil {
 		return fmt.Errorf("initialize scheduler: %w", err)
 	}
+	controlServer, err := control.Start(socketPath, state, logger)
+	if err != nil {
+		return fmt.Errorf("start control API: %w", err)
+	}
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := controlServer.Shutdown(shutdownContext); err != nil {
+			logger.Error("control API shutdown failed", "error", err)
+		}
+	}()
 	schedule := startScheduler(ctx, engine)
 
 	logger.Info(
@@ -61,6 +73,7 @@ func Run(ctx context.Context, configPath, statePath, logDir string, logger *slog
 		"config", configPath,
 		"state", statePath,
 		"logs", logDir,
+		"socket", socketPath,
 		"jobs", len(cfg.Jobs),
 		"recovered_runs", recovered,
 	)
@@ -89,6 +102,17 @@ func Run(ctx context.Context, configPath, statePath, logDir string, logger *slog
 				return fmt.Errorf("scheduler stopped unexpectedly")
 			}
 			return fmt.Errorf("scheduler failed: %w", err)
+		case err := <-controlServer.Done():
+			if schedule != nil {
+				if stopErr := schedule.stop(); stopErr != nil {
+					return fmt.Errorf("control API failed: %v; stop scheduler: %w", err, stopErr)
+				}
+				schedule = nil
+			}
+			if err == nil {
+				return fmt.Errorf("control API stopped unexpectedly")
+			}
+			return fmt.Errorf("control API failed: %w", err)
 		case <-reload:
 			next, err := config.Load(configPath)
 			if err != nil {
