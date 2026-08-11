@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build reproducible release archives
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$RELEASE_COMMIT")
+          export SOURCE_DATE_EPOCH
+          go run ./cmd/package-release \
+            --version "$RELEASE_VERSION" \
+            --commit "$RELEASE_COMMIT" \
+            --output dist
+
+      - name: Attest release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: "dist/*"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_VERSION" dist/* --clobber
+          else
+            gh release create "$RELEASE_VERSION" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "$RELEASE_VERSION"
+          fi

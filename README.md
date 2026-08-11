@@ -168,7 +168,13 @@ curl -fsSL https://raw.githubusercontent.com/frux/promptd/main/install.sh | sh
 
 The POSIX shell bootstrap supports Linux amd64 and arm64, downloads a release archive over HTTPS, requires its SHA-256 sidecar, installs the binary atomically to `~/.local/bin`, prints the setup plan, and asks for confirmation through `/dev/tty`. Set `PROMPTD_SETUP=skip` for download-only installation or `PROMPTD_SETUP=apply` for non-interactive setup.
 
-Release assets are not published yet, so the curl command will not work until the first GitHub release. The checksum protects against corruption or a mismatched asset; signing and provenance are part of the release milestone.
+Release assets are not published yet, so the curl command will not work until the first GitHub release. Each `v*` tag is configured to run the race test suite, build reproducible static Linux amd64/arm64 archives, publish SHA-256 sidecars, and generate a GitHub build-provenance attestation. Once a release exists, verify an archive with:
+
+```bash
+gh attestation verify promptd_linux_amd64.tar.gz --repo frux/promptd
+```
+
+This follows GitHub's official [artifact attestation workflow](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations). Maintainers can reproduce the archives locally with `make release VERSION=v0.1.0`; timestamps and embedded build metadata are derived from the source commit.
 
 ## Roadmap to v0.1
 
@@ -185,7 +191,7 @@ Release assets are not published yet, so the curl command will not work until th
 - [x] `promptd status` overview for all registered jobs
 - [x] `promptd setup` and checksum-verified shell bootstrap
 - [x] User and system systemd integration
-- [ ] Linux release artifacts and packages
+- [x] Reproducible Linux release archives, checksums, and provenance
 
 ## Development
 
