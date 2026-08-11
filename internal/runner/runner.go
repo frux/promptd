@@ -16,8 +16,9 @@ type Executor interface {
 }
 
 type Service struct {
-	executor    Executor
-	codexBinary string
+	executor     Executor
+	codexBinary  string
+	claudeBinary string
 }
 
 type Option func(*Service)
@@ -28,13 +29,20 @@ func WithCodexBinary(path string) Option {
 	}
 }
 
+func WithClaudeBinary(path string) Option {
+	return func(service *Service) {
+		service.claudeBinary = path
+	}
+}
+
 func New(executor Executor, options ...Option) *Service {
 	if executor == nil {
 		executor = supervisor.New()
 	}
 	service := &Service{
-		executor:    executor,
-		codexBinary: "codex",
+		executor:     executor,
+		codexBinary:  "codex",
+		claudeBinary: "claude",
 	}
 	for _, option := range options {
 		option(service)
@@ -76,9 +84,50 @@ func (s *Service) invocation(agent config.Agent) ([]string, io.Reader, error) {
 		return append([]string(nil), agent.Command...), nil, nil
 	case "codex":
 		return s.codexInvocation(agent)
+	case "claude":
+		return s.claudeInvocation(agent)
 	default:
 		return nil, nil, fmt.Errorf("unsupported agent type %q", agent.Type)
 	}
+}
+
+func (s *Service) claudeInvocation(agent config.Agent) ([]string, io.Reader, error) {
+	if strings.TrimSpace(s.claudeBinary) == "" {
+		return nil, nil, fmt.Errorf("Claude binary is empty")
+	}
+	prompt, err := promptForAgent(agent)
+	if err != nil {
+		return nil, nil, err
+	}
+	permissionMode := agent.PermissionMode
+	if permissionMode == "" {
+		permissionMode = "dontAsk"
+	}
+	switch permissionMode {
+	case "dontAsk", "acceptEdits", "auto", "plan", "bypassPermissions":
+	default:
+		return nil, nil, fmt.Errorf("unsupported Claude permission mode %q", permissionMode)
+	}
+
+	command := []string{s.claudeBinary}
+	if agent.Bare {
+		command = append(command, "--bare")
+	}
+	command = append(command,
+		"--print",
+		"--no-session-persistence",
+		"--output-format", "text",
+		"--permission-mode", permissionMode,
+	)
+	if len(agent.AllowedTools) > 0 {
+		command = append(command, "--allowedTools")
+		command = append(command, agent.AllowedTools...)
+	}
+	if agent.Model != "" {
+		command = append(command, "--model", agent.Model)
+	}
+	command = append(command, prompt)
+	return command, nil, nil
 }
 
 func (s *Service) codexInvocation(agent config.Agent) ([]string, io.Reader, error) {
@@ -118,7 +167,7 @@ func promptForAgent(agent config.Agent) (string, error) {
 	hasInline := strings.TrimSpace(agent.Prompt) != ""
 	hasFile := agent.PromptFile != ""
 	if hasInline == hasFile {
-		return "", fmt.Errorf("Codex agent requires exactly one of prompt or prompt_file")
+		return "", fmt.Errorf("%s agent requires exactly one of prompt or prompt_file", agent.Type)
 	}
 	if hasInline {
 		return agent.Prompt, nil

@@ -119,6 +119,55 @@ func TestCodexRunnerReadsPromptFile(t *testing.T) {
 	}
 }
 
+func TestClaudeRunnerUsesHeadlessMode(t *testing.T) {
+	executor := &recordingExecutor{}
+	job := config.Job{
+		Agent: config.Agent{
+			Type:           "claude",
+			Prompt:         "Fix the tests.",
+			Model:          "test-model",
+			PermissionMode: "acceptEdits",
+			AllowedTools:   []string{"Read", "Edit", "Bash(go test *)"},
+			Bare:           true,
+		},
+		Run: config.Run{Timeout: config.Duration(time.Minute)},
+	}
+
+	_, err := New(executor, WithClaudeBinary("/opt/claude")).Run(context.Background(), job, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	wantCommand := []string{
+		"/opt/claude", "--bare", "--print", "--no-session-persistence",
+		"--output-format", "text", "--permission-mode", "acceptEdits",
+		"--allowedTools", "Read", "Edit", "Bash(go test *)", "--model", "test-model",
+		"Fix the tests.",
+	}
+	if !reflect.DeepEqual(executor.spec.Command, wantCommand) {
+		t.Fatalf("command = %#v, want %#v", executor.spec.Command, wantCommand)
+	}
+	if executor.spec.Stdin != nil {
+		t.Fatalf("stdin = %#v, want nil", executor.spec.Stdin)
+	}
+}
+
+func TestClaudeRunnerDefaultsToDontAsk(t *testing.T) {
+	executor := &recordingExecutor{}
+	job := config.Job{
+		Agent: config.Agent{Type: "claude", Prompt: "Review this."},
+		Run:   config.Run{Timeout: config.Duration(time.Minute)},
+	}
+	if _, err := New(executor).Run(context.Background(), job, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := executor.spec.Command; !reflect.DeepEqual(got, []string{
+		"claude", "--print", "--no-session-persistence", "--output-format", "text",
+		"--permission-mode", "dontAsk", "Review this.",
+	}) {
+		t.Fatalf("command = %#v", got)
+	}
+}
+
 func TestRunnerOverlaysEnvironmentFile(t *testing.T) {
 	t.Setenv("PROMPTD_EXISTING", "old")
 	path := filepath.Join(t.TempDir(), "job.env")
@@ -175,6 +224,7 @@ func TestRunnerRejectsInvalidInputBeforeExecution(t *testing.T) {
 		{Type: "command"},
 		{Type: "codex", Prompt: "Hello", PromptFile: "also.md"},
 		{Type: "codex", Prompt: "Hello", Sandbox: "root"},
+		{Type: "claude", Prompt: "Hello", PermissionMode: "interactive"},
 		{Type: "unknown"},
 	}
 	for _, agent := range tests {

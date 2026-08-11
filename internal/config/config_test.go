@@ -134,6 +134,47 @@ jobs:
 	}
 }
 
+func TestLoadClaudeDefaults(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+jobs:
+  review:
+    schedule:
+      every: 1h
+    agent:
+      type: claude
+      prompt: Review the repository.
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	agent := cfg.Jobs["review"].Agent
+	if agent.PermissionMode != "dontAsk" {
+		t.Fatalf("permission mode = %q, want dontAsk", agent.PermissionMode)
+	}
+}
+
+func TestLoadRejectsInvalidClaudeOptions(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+jobs:
+  broken:
+    schedule:
+      every: 5m
+    agent:
+      type: claude
+      prompt: Hello
+      permission_mode: default
+`)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "permission_mode") {
+		t.Fatalf("Load() error = %v, want permission mode error", err)
+	}
+}
+
 func TestLoadResolvesRelativeFiles(t *testing.T) {
 	path := writeConfig(t, `
 version: 1

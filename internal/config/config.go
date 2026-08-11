@@ -22,6 +22,7 @@ const (
 	defaultOverlap      = "skip"
 	defaultMisfire      = "skip"
 	defaultCodexSandbox = "read-only"
+	defaultClaudeMode   = "dontAsk"
 )
 
 var jobIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -44,12 +45,15 @@ type Schedule struct {
 }
 
 type Agent struct {
-	Type       string   `yaml:"type"`
-	Prompt     string   `yaml:"prompt,omitempty"`
-	PromptFile string   `yaml:"prompt_file,omitempty"`
-	Command    []string `yaml:"command,omitempty"`
-	Model      string   `yaml:"model,omitempty"`
-	Sandbox    string   `yaml:"sandbox,omitempty"`
+	Type           string   `yaml:"type"`
+	Prompt         string   `yaml:"prompt,omitempty"`
+	PromptFile     string   `yaml:"prompt_file,omitempty"`
+	Command        []string `yaml:"command,omitempty"`
+	Model          string   `yaml:"model,omitempty"`
+	Sandbox        string   `yaml:"sandbox,omitempty"`
+	PermissionMode string   `yaml:"permission_mode,omitempty"`
+	AllowedTools   []string `yaml:"allowed_tools,omitempty"`
+	Bare           bool     `yaml:"bare,omitempty"`
 }
 
 type Run struct {
@@ -121,6 +125,9 @@ func (c *Config) applyDefaults() {
 		if job.Agent.Type == "codex" && job.Agent.Sandbox == "" {
 			job.Agent.Sandbox = defaultCodexSandbox
 		}
+		if job.Agent.Type == "claude" && job.Agent.PermissionMode == "" {
+			job.Agent.PermissionMode = defaultClaudeMode
+		}
 		c.Jobs[id] = job
 	}
 }
@@ -180,13 +187,11 @@ func validateJob(id string, job Job) error {
 
 	switch job.Agent.Type {
 	case "codex":
-		hasPrompt := strings.TrimSpace(job.Agent.Prompt) != ""
-		hasPromptFile := job.Agent.PromptFile != ""
-		if hasPrompt == hasPromptFile {
-			return fmt.Errorf("%s.agent: codex requires exactly one of prompt or prompt_file", prefix)
+		if err := validatePromptAgent(prefix, "codex", job.Agent); err != nil {
+			return err
 		}
-		if len(job.Agent.Command) != 0 {
-			return fmt.Errorf("%s.agent.command: not allowed for codex", prefix)
+		if job.Agent.PermissionMode != "" || len(job.Agent.AllowedTools) != 0 || job.Agent.Bare {
+			return fmt.Errorf("%s.agent: permission_mode, allowed_tools, and bare are not allowed for codex", prefix)
 		}
 		if job.Agent.Model != strings.TrimSpace(job.Agent.Model) {
 			return fmt.Errorf("%s.agent.model: must not have surrounding whitespace", prefix)
@@ -196,6 +201,26 @@ func validateJob(id string, job Job) error {
 		default:
 			return fmt.Errorf("%s.agent.sandbox: expected read-only, workspace-write, or danger-full-access", prefix)
 		}
+	case "claude":
+		if err := validatePromptAgent(prefix, "claude", job.Agent); err != nil {
+			return err
+		}
+		if job.Agent.Sandbox != "" {
+			return fmt.Errorf("%s.agent.sandbox: not allowed for claude", prefix)
+		}
+		if job.Agent.Model != strings.TrimSpace(job.Agent.Model) {
+			return fmt.Errorf("%s.agent.model: must not have surrounding whitespace", prefix)
+		}
+		switch job.Agent.PermissionMode {
+		case "dontAsk", "acceptEdits", "auto", "plan", "bypassPermissions":
+		default:
+			return fmt.Errorf("%s.agent.permission_mode: unsupported unattended mode %q", prefix, job.Agent.PermissionMode)
+		}
+		for index, tool := range job.Agent.AllowedTools {
+			if strings.TrimSpace(tool) == "" || tool != strings.TrimSpace(tool) {
+				return fmt.Errorf("%s.agent.allowed_tools[%d]: must be a non-empty value without surrounding whitespace", prefix, index)
+			}
+		}
 	case "command":
 		if len(job.Agent.Command) == 0 || strings.TrimSpace(job.Agent.Command[0]) == "" {
 			return fmt.Errorf("%s.agent.command: command agent requires a non-empty command", prefix)
@@ -203,11 +228,11 @@ func validateJob(id string, job Job) error {
 		if strings.TrimSpace(job.Agent.Prompt) != "" || job.Agent.PromptFile != "" {
 			return fmt.Errorf("%s.agent: prompt and prompt_file are not allowed for command", prefix)
 		}
-		if job.Agent.Model != "" || job.Agent.Sandbox != "" {
-			return fmt.Errorf("%s.agent: model and sandbox are not allowed for command", prefix)
+		if job.Agent.Model != "" || job.Agent.Sandbox != "" || job.Agent.PermissionMode != "" || len(job.Agent.AllowedTools) != 0 || job.Agent.Bare {
+			return fmt.Errorf("%s.agent: agent-specific options are not allowed for command", prefix)
 		}
 	default:
-		return fmt.Errorf("%s.agent.type: expected codex or command, got %q", prefix, job.Agent.Type)
+		return fmt.Errorf("%s.agent.type: expected codex, claude, or command, got %q", prefix, job.Agent.Type)
 	}
 
 	if job.Run.Timeout.Value() <= 0 {
@@ -220,5 +245,17 @@ func validateJob(id string, job Job) error {
 		return fmt.Errorf("%s.run.misfire: expected skip or run_once", prefix)
 	}
 
+	return nil
+}
+
+func validatePromptAgent(prefix, agentType string, agent Agent) error {
+	hasPrompt := strings.TrimSpace(agent.Prompt) != ""
+	hasPromptFile := agent.PromptFile != ""
+	if hasPrompt == hasPromptFile {
+		return fmt.Errorf("%s.agent: %s requires exactly one of prompt or prompt_file", prefix, agentType)
+	}
+	if len(agent.Command) != 0 {
+		return fmt.Errorf("%s.agent.command: not allowed for %s", prefix, agentType)
+	}
 	return nil
 }

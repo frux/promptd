@@ -117,6 +117,21 @@ agent:
 
 The optional `model` field overrides the Codex CLI model for that job.
 
+Claude Code jobs use Anthropic's official [`claude --print` automation mode](https://code.claude.com/docs/en/headless). They default to `dontAsk`, disable session persistence, and can grant only the tools a job needs:
+
+```yaml
+agent:
+  type: claude
+  prompt_file: prompts/fix-tests.md
+  permission_mode: acceptEdits
+  allowed_tools:
+    - Read
+    - Edit
+    - Bash(go test *)
+```
+
+Supported unattended permission modes are `dontAsk`, `acceptEdits`, `auto`, `plan`, and the explicitly dangerous `bypassPermissions`. Set `bare: true` for reproducible API-key-based automation; bare mode intentionally does not use Claude's saved subscription login.
+
 Environment files use a deliberately small dotenv-style subset: one `KEY=VALUE` per line, optional `export`, comments on their own lines, and single- or double-quoted values. Values are not expanded by a shell.
 
 See [`examples/config.yaml`](examples/config.yaml) for a complete example.
@@ -141,7 +156,8 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] SQLite state and run history
 - [x] Process-group supervisor and timeouts
 - [x] Command and Codex runners
-- [ ] Popular agent runners, starting with Claude Code
+- [x] Claude Code runner
+- [ ] Additional popular agent runners
 - [ ] Cron/interval scheduler
 - [ ] Unix socket control API
 - [ ] `promptd status` overview for all registered jobs
