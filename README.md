@@ -128,8 +128,10 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [ ] SQLite state and run history
 - [ ] Process-group supervisor and timeouts
 - [ ] Command and Codex runners
+- [ ] Popular agent runners, starting with Claude Code
 - [ ] Cron/interval scheduler
 - [ ] Unix socket control API
+- [ ] `promptd status` overview for all registered jobs
 - [ ] `promptd setup` and verified shell bootstrap
 - [ ] User and system systemd integration
 - [ ] Linux release artifacts and packages
