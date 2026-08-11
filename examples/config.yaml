@@ -9,6 +9,7 @@ jobs:
     agent:
       type: codex
       prompt_file: prompts/daily-report.md
+      sandbox: read-only
 
     run:
       working_directory: ..

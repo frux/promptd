@@ -5,7 +5,7 @@
 The project is Linux-first. Its scheduler and execution engine are designed to remain independent from systemd; systemd will supervise one long-running `promptd` process.
 
 > [!IMPORTANT]
-> `promptd` is in early development. The daemon currently validates configuration, persists registered jobs, and maintains run history in SQLite. The process supervisor handles timeouts and whole process groups; scheduling, agent runners, and installation automation are the next milestones.
+> `promptd` is in early development. The daemon currently validates configuration, persists registered jobs, and maintains run history in SQLite. The execution layer includes supervised command and Codex runners; scheduling, daemon-to-runner orchestration, and installation automation are the next milestones.
 
 ## Why promptd?
 
@@ -106,6 +106,19 @@ Supported execution policies in the initial schema:
 | `misfire` | `skip`, `run_once` | `skip` |
 | `timeout` | Go duration such as `30s`, `15m`, `2h` | `30m` |
 
+Codex jobs use the official [`codex exec` non-interactive mode](https://developers.openai.com/codex/noninteractive). Prompts are passed over stdin, sessions are ephemeral, approvals are disabled for unattended operation, and the sandbox defaults to `read-only`. Jobs that need to modify their workspace must opt in explicitly:
+
+```yaml
+agent:
+  type: codex
+  prompt: Fix the failing tests and verify the result.
+  sandbox: workspace-write
+```
+
+The optional `model` field overrides the Codex CLI model for that job.
+
+Environment files use a deliberately small dotenv-style subset: one `KEY=VALUE` per line, optional `export`, comments on their own lines, and single- or double-quoted values. Values are not expanded by a shell.
+
 See [`examples/config.yaml`](examples/config.yaml) for a complete example.
 
 ## Installation direction
@@ -127,7 +140,7 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] Daemon lifecycle and safe configuration reload
 - [x] SQLite state and run history
 - [x] Process-group supervisor and timeouts
-- [ ] Command and Codex runners
+- [x] Command and Codex runners
 - [ ] Popular agent runners, starting with Claude Code
 - [ ] Cron/interval scheduler
 - [ ] Unix socket control API

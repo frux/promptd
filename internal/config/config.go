@@ -18,9 +18,10 @@ import (
 const CurrentVersion = 1
 
 const (
-	defaultTimeout = 30 * time.Minute
-	defaultOverlap = "skip"
-	defaultMisfire = "skip"
+	defaultTimeout      = 30 * time.Minute
+	defaultOverlap      = "skip"
+	defaultMisfire      = "skip"
+	defaultCodexSandbox = "read-only"
 )
 
 var jobIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -47,6 +48,8 @@ type Agent struct {
 	Prompt     string   `yaml:"prompt,omitempty"`
 	PromptFile string   `yaml:"prompt_file,omitempty"`
 	Command    []string `yaml:"command,omitempty"`
+	Model      string   `yaml:"model,omitempty"`
+	Sandbox    string   `yaml:"sandbox,omitempty"`
 }
 
 type Run struct {
@@ -115,6 +118,9 @@ func (c *Config) applyDefaults() {
 		if job.Run.Misfire == "" {
 			job.Run.Misfire = defaultMisfire
 		}
+		if job.Agent.Type == "codex" && job.Agent.Sandbox == "" {
+			job.Agent.Sandbox = defaultCodexSandbox
+		}
 		c.Jobs[id] = job
 	}
 }
@@ -182,9 +188,23 @@ func validateJob(id string, job Job) error {
 		if len(job.Agent.Command) != 0 {
 			return fmt.Errorf("%s.agent.command: not allowed for codex", prefix)
 		}
+		if job.Agent.Model != strings.TrimSpace(job.Agent.Model) {
+			return fmt.Errorf("%s.agent.model: must not have surrounding whitespace", prefix)
+		}
+		switch job.Agent.Sandbox {
+		case "read-only", "workspace-write", "danger-full-access":
+		default:
+			return fmt.Errorf("%s.agent.sandbox: expected read-only, workspace-write, or danger-full-access", prefix)
+		}
 	case "command":
 		if len(job.Agent.Command) == 0 || strings.TrimSpace(job.Agent.Command[0]) == "" {
 			return fmt.Errorf("%s.agent.command: command agent requires a non-empty command", prefix)
+		}
+		if strings.TrimSpace(job.Agent.Prompt) != "" || job.Agent.PromptFile != "" {
+			return fmt.Errorf("%s.agent: prompt and prompt_file are not allowed for command", prefix)
+		}
+		if job.Agent.Model != "" || job.Agent.Sandbox != "" {
+			return fmt.Errorf("%s.agent: model and sandbox are not allowed for command", prefix)
 		}
 	default:
 		return fmt.Errorf("%s.agent.type: expected codex or command, got %q", prefix, job.Agent.Type)

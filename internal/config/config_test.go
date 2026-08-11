@@ -38,6 +38,9 @@ jobs:
 	if job.Run.Misfire != "skip" {
 		t.Fatalf("misfire = %q, want skip", job.Run.Misfire)
 	}
+	if job.Agent.Sandbox != "read-only" {
+		t.Fatalf("sandbox = %q, want read-only", job.Agent.Sandbox)
+	}
 	if !filepath.IsAbs(job.Run.WorkingDirectory) {
 		t.Fatalf("working directory = %q, want absolute path", job.Run.WorkingDirectory)
 	}
@@ -90,6 +93,44 @@ jobs:
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "set exactly one") {
 		t.Fatalf("Load() error = %v, want exclusive schedule error", err)
+	}
+}
+
+func TestLoadRejectsInvalidAgentSpecificFields(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+jobs:
+  broken:
+    schedule:
+      every: 5m
+    agent:
+      type: command
+      command: ["true"]
+      prompt: ignored
+`)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "not allowed for command") {
+		t.Fatalf("Load() error = %v, want agent-specific field error", err)
+	}
+}
+
+func TestLoadRejectsInvalidCodexSandbox(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+jobs:
+  broken:
+    schedule:
+      every: 5m
+    agent:
+      type: codex
+      prompt: Hello
+      sandbox: root
+`)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "agent.sandbox") {
+		t.Fatalf("Load() error = %v, want sandbox error", err)
 	}
 }
 
