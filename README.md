@@ -5,7 +5,7 @@
 The project is Linux-first. Its scheduler and execution engine are designed to remain independent from systemd; systemd will supervise one long-running `promptd` process.
 
 > [!IMPORTANT]
-> `promptd` is in early development. The daemon currently validates configuration, persists registered jobs, and maintains run history in SQLite. Scheduling, process execution, agent runners, and installation automation are the next milestones.
+> `promptd` is in early development. The daemon currently validates configuration, persists registered jobs, and maintains run history in SQLite. The process supervisor handles timeouts and whole process groups; scheduling, agent runners, and installation automation are the next milestones.
 
 ## Why promptd?
 
@@ -126,7 +126,7 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] Strict YAML configuration validation
 - [x] Daemon lifecycle and safe configuration reload
 - [x] SQLite state and run history
-- [ ] Process-group supervisor and timeouts
+- [x] Process-group supervisor and timeouts
 - [ ] Command and Codex runners
 - [ ] Popular agent runners, starting with Claude Code
 - [ ] Cron/interval scheduler
