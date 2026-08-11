@@ -2,10 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/frux/promptd/internal/store"
 )
 
 func TestVersion(t *testing.T) {
@@ -64,4 +69,92 @@ func TestSubcommandHelpExitsSuccessfully(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Usage of validate") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+}
+
+func TestStatusShowsAllRegisteredJobs(t *testing.T) {
+	path := seedStatusStore(t)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"status", "--state", path}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{"JOB", "alpha", "enabled", "beta", "disabled", "failed"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("status output %q does not contain %q", output, expected)
+		}
+	}
+}
+
+func TestStatusJSON(t *testing.T) {
+	path := seedStatusStore(t)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"status", "--state", path, "--format", "json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %s", code, stderr.String())
+	}
+	var rows []statusRow
+	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
+		t.Fatalf("decode status JSON: %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != "alpha" || !rows[0].Enabled || rows[0].NextRun == nil {
+		t.Fatalf("rows = %#v", rows)
+	}
+	if rows[1].ID != "beta" || rows[1].Enabled || rows[1].NextRun != nil || rows[1].LastRun == nil || rows[1].LastRun.Status != store.RunFailed {
+		t.Fatalf("rows = %#v", rows)
+	}
+}
+
+func TestStatusMissingDatabaseDoesNotCreateIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.db")
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"status", "--state", path}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "status failed") {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("database was created: %v", err)
+	}
+}
+
+func seedStatusStore(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "promptd.db")
+	state, err := store.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := []store.JobSpec{
+		{ID: "alpha", ConfigHash: "config-a", ScheduleHash: "schedule-a", ConfigJSON: []byte(`{"id":"alpha"}`)},
+		{ID: "beta", ConfigHash: "config-b", ScheduleHash: "schedule-b", ConfigJSON: []byte(`{"id":"beta"}`)},
+	}
+	if err := state.ReconcileJobs(ctx, jobs); err != nil {
+		t.Fatal(err)
+	}
+	next := time.Date(2026, 8, 12, 4, 0, 0, 0, time.UTC)
+	if err := state.SetSchedulerState(ctx, "alpha", &next, nil); err != nil {
+		t.Fatal(err)
+	}
+	run, err := state.CreateRun(ctx, store.NewRun{JobID: "beta", Trigger: "scheduled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := next.Add(-time.Hour)
+	if _, err := state.StartRun(ctx, run.ID, started, "/tmp/beta.log"); err != nil {
+		t.Fatal(err)
+	}
+	exitCode := 2
+	if _, err := state.FinishRun(ctx, run.ID, started.Add(time.Minute), store.RunResult{
+		Status: store.RunFailed, ExitCode: &exitCode, Error: "failed", LogPath: "/tmp/beta.log",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ReconcileJobs(ctx, jobs[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,6 +94,36 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	return store, nil
 }
 
+func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
+	if path == "" || path == ":memory:" {
+		return nil, fmt.Errorf("read-only store requires a file path")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sqlite path: %w", err)
+	}
+	if _, err := os.Stat(absolute); err != nil {
+		return nil, fmt.Errorf("open sqlite state: %w", err)
+	}
+	location := &url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
+	query := location.Query()
+	query.Set("mode", "ro")
+	location.RawQuery = query.Encode()
+
+	db, err := sql.Open("sqlite", location.String())
+	if err != nil {
+		return nil, fmt.Errorf("open read-only sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	store := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
+	if err := store.initializeReadOnly(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
 func (s *Store) initialize(ctx context.Context) error {
 	if err := s.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping sqlite: %w", err)
@@ -112,6 +143,34 @@ func (s *Store) initialize(ctx context.Context) error {
 
 	if err := s.migrate(ctx); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *Store) initializeReadOnly(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping read-only sqlite: %w", err)
+	}
+	for _, pragma := range []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA query_only = ON",
+	} {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("configure read-only sqlite with %q: %w", pragma, err)
+		}
+	}
+
+	latest, err := latestMigrationVersion()
+	if err != nil {
+		return err
+	}
+	var current int
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if current != latest {
+		return fmt.Errorf("state schema version is %d, expected %d; start the daemon to migrate it", current, latest)
 	}
 	return nil
 }
@@ -163,6 +222,27 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		current = version
 	}
 	return nil
+}
+
+func latestMigrationVersion() (int, error) {
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		return 0, fmt.Errorf("read migrations: %w", err)
+	}
+	latest := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		version, err := migrationVersion(entry.Name())
+		if err != nil {
+			return 0, err
+		}
+		if version > latest {
+			latest = version
+		}
+	}
+	return latest, nil
 }
 
 func migrationVersion(name string) (int, error) {
@@ -290,6 +370,31 @@ ORDER BY id`)
 		return nil, fmt.Errorf("iterate jobs: %w", err)
 	}
 	return jobs, nil
+}
+
+func (s *Store) ListJobStatuses(ctx context.Context) ([]JobStatus, error) {
+	jobs, err := s.ListJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]JobStatus, 0, len(jobs))
+	for _, job := range jobs {
+		schedulerState, err := s.SchedulerState(ctx, job.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read status for job %q: %w", job.ID, err)
+		}
+		runs, err := s.ListRuns(ctx, RunFilter{JobID: job.ID, Limit: 1})
+		if err != nil {
+			return nil, fmt.Errorf("read last run for job %q: %w", job.ID, err)
+		}
+		status := JobStatus{Job: job, Scheduler: schedulerState}
+		if len(runs) != 0 {
+			lastRun := runs[0]
+			status.LastRun = &lastRun
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 func (s *Store) SetSchedulerState(ctx context.Context, jobID string, nextRun, lastScheduledAt *time.Time) error {

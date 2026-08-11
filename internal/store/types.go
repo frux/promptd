@@ -80,6 +80,12 @@ type RunFilter struct {
 	Limit int
 }
 
+type JobStatus struct {
+	Job       Job
+	Scheduler SchedulerState
+	LastRun   *Run
+}
+
 func (r RunStatus) terminal() bool {
 	switch r {
 	case RunSucceeded, RunFailed, RunTimedOut, RunCanceled, RunSkipped, RunInterrupted:

@@ -72,6 +72,42 @@ func TestOpenDoesNotChangeParentDirectoryPermissions(t *testing.T) {
 	}
 }
 
+func TestOpenReadOnlyReadsWithoutAllowingWrites(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "promptd.db")
+	writable := openTestStoreAt(t, path)
+	seedJob(t, writable, "report")
+	if err := writable.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly() error = %v", err)
+	}
+	defer readOnly.Close()
+	jobs, err := readOnly.ListJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != "report" {
+		t.Fatalf("jobs = %#v", jobs)
+	}
+	if err := readOnly.ReconcileJobs(ctx, nil); err == nil {
+		t.Fatal("ReconcileJobs() on read-only store error = nil")
+	}
+}
+
+func TestOpenReadOnlyRejectsMissingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.db")
+	if _, err := OpenReadOnly(context.Background(), path); err == nil {
+		t.Fatal("OpenReadOnly() error = nil")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database was created: %v", err)
+	}
+}
+
 func TestReconcileJobsDisablesMissingJobs(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
