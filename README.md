@@ -5,7 +5,7 @@
 The project is Linux-first. Its scheduler and execution engine are designed to remain independent from systemd; systemd will supervise one long-running `promptd` process.
 
 > [!IMPORTANT]
-> `promptd` is in early development. The daemon currently validates configuration, persists registered jobs, and maintains run history in SQLite. The execution layer includes supervised command and Codex runners; scheduling, daemon-to-runner orchestration, and installation automation are the next milestones.
+> `promptd` is in early development. The daemon now schedules jobs, executes command, Codex, and Claude Code runners, stores run history in SQLite, and writes per-run logs. The control API, status command, and installation automation are the next milestones.
 
 ## Why promptd?
 
@@ -55,10 +55,12 @@ systemd / launchd / container runtime
 ```text
 promptd version
 promptd validate --config path/to/config.yaml
-promptd daemon --config path/to/config.yaml --state path/to/promptd.db
+promptd daemon --config path/to/config.yaml --state path/to/promptd.db --log-dir path/to/logs
 ```
 
-The daemon reloads its configuration on `SIGHUP`. An invalid reload is rejected while the last valid configuration remains active. Its default per-user state database is `~/.local/state/promptd/promptd.db` on Linux.
+The daemon reloads its configuration on `SIGHUP`. An invalid reload is rejected while the last valid configuration remains active. Its default per-user state database is `~/.local/state/promptd/promptd.db` on Linux; logs default to the adjacent `logs/` directory.
+
+Interval schedules stay anchored to their persisted `next_run`, so daemon restarts do not introduce drift. After downtime, `misfire: skip` advances to the next future occurrence, while `misfire: run_once` coalesces missed occurrences into one run. `overlap: skip` records overlapping occurrences as skipped; `overlap: queue_one` retains at most one pending run.
 
 ## Build from source
 
@@ -158,7 +160,7 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] Command and Codex runners
 - [x] Claude Code runner
 - [ ] Additional popular agent runners
-- [ ] Cron/interval scheduler
+- [x] Cron/interval scheduler and runner orchestration
 - [ ] Unix socket control API
 - [ ] `promptd status` overview for all registered jobs
 - [ ] `promptd setup` and verified shell bootstrap

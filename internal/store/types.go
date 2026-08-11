@@ -24,17 +24,19 @@ const (
 )
 
 type JobSpec struct {
-	ID         string
-	ConfigHash string
-	ConfigJSON []byte
+	ID           string
+	ConfigHash   string
+	ScheduleHash string
+	ConfigJSON   []byte
 }
 
 type Job struct {
-	ID         string
-	ConfigHash string
-	ConfigJSON []byte
-	Enabled    bool
-	UpdatedAt  time.Time
+	ID           string
+	ConfigHash   string
+	ScheduleHash string
+	ConfigJSON   []byte
+	Enabled      bool
+	UpdatedAt    time.Time
 }
 
 type SchedulerState struct {

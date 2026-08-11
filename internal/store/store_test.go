@@ -48,8 +48,8 @@ func TestOpenCreatesPrivateDatabaseAndMigratesIdempotently(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrations != 1 {
-		t.Fatalf("migration count = %d, want 1", migrations)
+	if migrations != 2 {
+		t.Fatalf("migration count = %d, want 2", migrations)
 	}
 }
 
@@ -77,13 +77,13 @@ func TestReconcileJobsDisablesMissingJobs(t *testing.T) {
 	store := openTestStore(t)
 
 	if err := store.ReconcileJobs(ctx, []JobSpec{
-		{ID: "alpha", ConfigHash: "hash-a", ConfigJSON: []byte(`{"id":"alpha"}`)},
-		{ID: "beta", ConfigHash: "hash-b", ConfigJSON: []byte(`{"id":"beta"}`)},
+		{ID: "alpha", ConfigHash: "hash-a", ScheduleHash: "schedule-a", ConfigJSON: []byte(`{"id":"alpha"}`)},
+		{ID: "beta", ConfigHash: "hash-b", ScheduleHash: "schedule-b", ConfigJSON: []byte(`{"id":"beta"}`)},
 	}); err != nil {
 		t.Fatalf("ReconcileJobs() error = %v", err)
 	}
 	if err := store.ReconcileJobs(ctx, []JobSpec{
-		{ID: "beta", ConfigHash: "hash-b2", ConfigJSON: []byte(`{"id":"beta","v":2}`)},
+		{ID: "beta", ConfigHash: "hash-b2", ScheduleHash: "schedule-b", ConfigJSON: []byte(`{"id":"beta","v":2}`)},
 	}); err != nil {
 		t.Fatalf("second ReconcileJobs() error = %v", err)
 	}
@@ -130,6 +130,47 @@ func TestSchedulerState(t *testing.T) {
 	}
 }
 
+func TestReconcileJobsResetsOnlyChangedSchedules(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	spec := JobSpec{
+		ID: "report", ConfigHash: "config-v1", ScheduleHash: "schedule-v1", ConfigJSON: []byte(`{"version":1}`),
+	}
+	if err := store.ReconcileJobs(ctx, []JobSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	next := fixedNow.Add(time.Hour)
+	last := fixedNow
+	if err := store.SetSchedulerState(ctx, "report", &next, &last); err != nil {
+		t.Fatal(err)
+	}
+
+	spec.ConfigHash = "config-v2"
+	spec.ConfigJSON = []byte(`{"version":2}`)
+	if err := store.ReconcileJobs(ctx, []JobSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.SchedulerState(ctx, "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.NextRun == nil || !state.NextRun.Equal(next) {
+		t.Fatalf("next run after config-only change = %v, want %v", state.NextRun, next)
+	}
+
+	spec.ScheduleHash = "schedule-v2"
+	if err := store.ReconcileJobs(ctx, []JobSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.SchedulerState(ctx, "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.NextRun != nil || state.LastScheduledAt != nil {
+		t.Fatalf("state after schedule change = %#v, want reset", state)
+	}
+}
+
 func TestRunLifecycleAndHistory(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -148,7 +189,7 @@ func TestRunLifecycleAndHistory(t *testing.T) {
 	}
 
 	started := fixedNow.Add(2 * time.Minute)
-	run, err = store.StartRun(ctx, run.ID, started)
+	run, err = store.StartRun(ctx, run.ID, started, "/tmp/report.log")
 	if err != nil {
 		t.Fatalf("StartRun() error = %v", err)
 	}
@@ -178,10 +219,10 @@ func TestRunLifecycleAndHistory(t *testing.T) {
 		t.Fatalf("runs = %#v", runs)
 	}
 
-	if _, err := store.StartRun(ctx, run.ID, started); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := store.StartRun(ctx, run.ID, started, ""); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("second StartRun() error = %v, want ErrInvalidTransition", err)
 	}
-	if _, err := store.StartRun(ctx, 9999, started); !errors.Is(err, ErrNotFound) {
+	if _, err := store.StartRun(ctx, 9999, started, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing StartRun() error = %v, want ErrNotFound", err)
 	}
 }
@@ -206,7 +247,7 @@ func TestFinishQueuedRunAsSkippedOrCanceled(t *testing.T) {
 	}
 }
 
-func TestRecoverInterruptedRunsLeavesQueuedRuns(t *testing.T) {
+func TestRecoverInterruptedRunsMarksAllUnfinishedRuns(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	seedJob(t, store, "report")
@@ -215,7 +256,7 @@ func TestRecoverInterruptedRunsLeavesQueuedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.StartRun(ctx, running.ID, fixedNow); err != nil {
+	if _, err := store.StartRun(ctx, running.ID, fixedNow, "/tmp/running.log"); err != nil {
 		t.Fatal(err)
 	}
 	queued, err := store.CreateRun(ctx, NewRun{JobID: "report", Trigger: "manual"})
@@ -227,8 +268,8 @@ func TestRecoverInterruptedRunsLeavesQueuedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecoverInterruptedRuns() error = %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("recovered count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("recovered count = %d, want 2", count)
 	}
 
 	running, err = store.Run(ctx, running.ID)
@@ -242,8 +283,8 @@ func TestRecoverInterruptedRunsLeavesQueuedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if queued.Status != RunQueued {
-		t.Fatalf("queued status = %q, want queued", queued.Status)
+	if queued.Status != RunInterrupted || queued.FinishedAt == nil {
+		t.Fatalf("recovered queued run = %#v", queued)
 	}
 }
 
@@ -271,7 +312,7 @@ func TestRunKeepsOriginalJobRevision(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	if err := store.ReconcileJobs(ctx, []JobSpec{{
-		ID: "report", ConfigHash: "hash-v1", ConfigJSON: []byte(`{"version":1}`),
+		ID: "report", ConfigHash: "hash-v1", ScheduleHash: "schedule-v1", ConfigJSON: []byte(`{"version":1}`),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +321,7 @@ func TestRunKeepsOriginalJobRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ReconcileJobs(ctx, []JobSpec{{
-		ID: "report", ConfigHash: "hash-v2", ConfigJSON: []byte(`{"version":2}`),
+		ID: "report", ConfigHash: "hash-v2", ScheduleHash: "schedule-v1", ConfigJSON: []byte(`{"version":2}`),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +362,7 @@ func openTestStoreAt(t *testing.T, path string) *Store {
 func seedJob(t *testing.T, store *Store, id string) {
 	t.Helper()
 	if err := store.ReconcileJobs(context.Background(), []JobSpec{{
-		ID: id, ConfigHash: "hash-" + id, ConfigJSON: []byte(`{"id":"` + id + `"}`),
+		ID: id, ConfigHash: "hash-" + id, ScheduleHash: "schedule-" + id, ConfigJSON: []byte(`{"id":"` + id + `"}`),
 	}}); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}

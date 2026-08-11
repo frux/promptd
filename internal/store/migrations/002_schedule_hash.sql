@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN schedule_hash TEXT NOT NULL DEFAULT '';

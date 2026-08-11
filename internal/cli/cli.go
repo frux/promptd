@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/frux/promptd/internal/buildinfo"
@@ -79,6 +80,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", defaultConfigPath(stderr), "path to config file")
 	statePath := flags.String("state", defaultStatePath(stderr), "path to SQLite state database")
+	logDir := flags.String("log-dir", "", "directory for per-run logs (default: next to state database)")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -101,7 +103,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := daemon.Run(ctx, *configPath, *statePath, slog.New(handler)); err != nil {
+	resolvedLogDir := *logDir
+	if resolvedLogDir == "" {
+		resolvedLogDir = filepath.Join(filepath.Dir(*statePath), "logs")
+	}
+	if err := daemon.Run(ctx, *configPath, *statePath, resolvedLogDir, slog.New(handler)); err != nil {
 		fmt.Fprintf(stderr, "daemon failed: %v\n", err)
 		return 1
 	}

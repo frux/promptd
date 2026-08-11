@@ -202,8 +202,8 @@ func (s *Store) applyMigration(ctx context.Context, version int, name, body stri
 func (s *Store) ReconcileJobs(ctx context.Context, jobs []JobSpec) error {
 	seen := make(map[string]struct{}, len(jobs))
 	for _, job := range jobs {
-		if job.ID == "" || job.ConfigHash == "" || len(job.ConfigJSON) == 0 {
-			return fmt.Errorf("job id, config hash, and config JSON are required")
+		if job.ID == "" || job.ConfigHash == "" || job.ScheduleHash == "" || len(job.ConfigJSON) == 0 {
+			return fmt.Errorf("job id, config hash, schedule hash, and config JSON are required")
 		}
 		if _, exists := seen[job.ID]; exists {
 			return fmt.Errorf("duplicate job %q", job.ID)
@@ -224,13 +224,24 @@ func (s *Store) ReconcileJobs(ctx context.Context, jobs []JobSpec) error {
 
 	for _, job := range jobs {
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO jobs(id, config_hash, config_json, enabled, updated_at)
-VALUES (?, ?, ?, 1, ?)
+UPDATE scheduler_state
+SET next_run = NULL, last_scheduled_at = NULL, updated_at = ?
+WHERE job_id = ?
+  AND EXISTS (
+      SELECT 1 FROM jobs
+      WHERE id = ? AND schedule_hash <> ?
+  )`, now, job.ID, job.ID, job.ScheduleHash); err != nil {
+			return fmt.Errorf("reset changed schedule for %q: %w", job.ID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO jobs(id, config_hash, schedule_hash, config_json, enabled, updated_at)
+VALUES (?, ?, ?, ?, 1, ?)
 ON CONFLICT(id) DO UPDATE SET
     config_hash = excluded.config_hash,
+    schedule_hash = excluded.schedule_hash,
     config_json = excluded.config_json,
     enabled = 1,
-    updated_at = excluded.updated_at`, job.ID, job.ConfigHash, job.ConfigJSON, now); err != nil {
+    updated_at = excluded.updated_at`, job.ID, job.ConfigHash, job.ScheduleHash, job.ConfigJSON, now); err != nil {
 			return fmt.Errorf("upsert job %q: %w", job.ID, err)
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -255,7 +266,7 @@ ON CONFLICT(job_id, config_hash) DO NOTHING`, job.ID, job.ConfigHash, job.Config
 
 func (s *Store) ListJobs(ctx context.Context) ([]Job, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, config_hash, config_json, enabled, updated_at
+SELECT id, config_hash, schedule_hash, config_json, enabled, updated_at
 FROM jobs
 ORDER BY id`)
 	if err != nil {
@@ -268,7 +279,7 @@ ORDER BY id`)
 		var job Job
 		var enabled int
 		var updatedAt int64
-		if err := rows.Scan(&job.ID, &job.ConfigHash, &job.ConfigJSON, &enabled, &updatedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.ConfigHash, &job.ScheduleHash, &job.ConfigJSON, &enabled, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan job: %w", err)
 		}
 		job.Enabled = enabled == 1
@@ -335,11 +346,11 @@ WHERE id = ? AND enabled = 1`, RunQueued, input.Trigger, nullableTime(input.Sche
 	return s.Run(ctx, id)
 }
 
-func (s *Store) StartRun(ctx context.Context, id int64, startedAt time.Time) (Run, error) {
+func (s *Store) StartRun(ctx context.Context, id int64, startedAt time.Time, logPath string) (Run, error) {
 	result, err := s.db.ExecContext(ctx, `
 UPDATE runs
-SET status = ?, started_at = ?, updated_at = ?
-WHERE id = ? AND status = ?`, RunRunning, toUnixNano(startedAt), toUnixNano(s.now()), id, RunQueued)
+SET status = ?, started_at = ?, log_path = ?, updated_at = ?
+WHERE id = ? AND status = ?`, RunRunning, toUnixNano(startedAt), logPath, toUnixNano(s.now()), id, RunQueued)
 	if err != nil {
 		return Run{}, fmt.Errorf("start run %d: %w", id, err)
 	}
@@ -393,7 +404,7 @@ SET status = ?, finished_at = ?, error = CASE
         ELSE error
     END,
     updated_at = ?
-WHERE status = ?`, RunInterrupted, toUnixNano(recoveredAt), toUnixNano(s.now()), RunRunning)
+WHERE status IN (?, ?)`, RunInterrupted, toUnixNano(recoveredAt), toUnixNano(s.now()), RunQueued, RunRunning)
 	if err != nil {
 		return 0, fmt.Errorf("recover interrupted runs: %w", err)
 	}

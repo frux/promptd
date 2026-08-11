@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/frux/promptd/internal/config"
+	"github.com/frux/promptd/internal/runner"
+	"github.com/frux/promptd/internal/scheduler"
 	"github.com/frux/promptd/internal/store"
 )
 
-// Run loads the configuration and keeps the process alive until cancellation.
-// Scheduling and execution are added in subsequent milestones.
-func Run(ctx context.Context, configPath, statePath string, logger *slog.Logger) error {
+// Run loads the configuration, schedules jobs, and keeps the process alive
+// until cancellation.
+func Run(ctx context.Context, configPath, statePath, logDir string, logger *slog.Logger) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -42,11 +44,23 @@ func Run(ctx context.Context, configPath, statePath string, logger *slog.Logger)
 	if err != nil {
 		return err
 	}
+	execution, err := newJobRuntime(ctx, state, runner.New(nil), logDir, logger, cfg.Jobs)
+	if err != nil {
+		return err
+	}
+	defer execution.Shutdown()
+
+	engine, err := scheduler.New(ctx, state, scheduler.Definitions(cfg.Jobs), execution.Trigger)
+	if err != nil {
+		return fmt.Errorf("initialize scheduler: %w", err)
+	}
+	schedule := startScheduler(ctx, engine)
 
 	logger.Info(
 		"daemon started",
 		"config", configPath,
 		"state", statePath,
+		"logs", logDir,
 		"jobs", len(cfg.Jobs),
 		"recovered_runs", recovered,
 	)
@@ -58,22 +72,88 @@ func Run(ctx context.Context, configPath, statePath string, logger *slog.Logger)
 	for {
 		select {
 		case <-ctx.Done():
+			if schedule != nil {
+				if err := schedule.stop(); err != nil {
+					return fmt.Errorf("stop scheduler: %w", err)
+				}
+			}
 			logger.Info("daemon stopped")
 			return nil
+		case err := <-schedule.done:
+			schedule = nil
+			if ctx.Err() != nil && err == nil {
+				logger.Info("daemon stopped")
+				return nil
+			}
+			if err == nil {
+				return fmt.Errorf("scheduler stopped unexpectedly")
+			}
+			return fmt.Errorf("scheduler failed: %w", err)
 		case <-reload:
 			next, err := config.Load(configPath)
 			if err != nil {
 				logger.Error("config reload rejected", "error", err)
 				continue
 			}
+			if err := schedule.stop(); err != nil {
+				return fmt.Errorf("stop scheduler for reload: %w", err)
+			}
+			schedule = nil
+
 			if err := reconcileConfig(ctx, state, next); err != nil {
 				logger.Error("config reload rejected", "error", err)
+				schedule, err = rebuildScheduler(ctx, state, cfg, execution)
+				if err != nil {
+					return fmt.Errorf("restart scheduler after rejected reload: %w", err)
+				}
 				continue
 			}
+			engine, err := scheduler.New(ctx, state, scheduler.Definitions(next.Jobs), execution.Trigger)
+			if err != nil {
+				reloadErr := err
+				if rollbackErr := reconcileConfig(ctx, state, cfg); rollbackErr != nil {
+					return fmt.Errorf("reload scheduler: %v; roll back config: %w", reloadErr, rollbackErr)
+				}
+				schedule, err = rebuildScheduler(ctx, state, cfg, execution)
+				if err != nil {
+					return fmt.Errorf("restart scheduler after rollback: %w", err)
+				}
+				logger.Error("config reload rejected", "error", reloadErr)
+				continue
+			}
+			execution.Replace(next.Jobs)
+			schedule = startScheduler(ctx, engine)
 			cfg = next
 			logger.Info("config reloaded", "jobs", len(cfg.Jobs))
 		}
 	}
+}
+
+type schedulerProcess struct {
+	cancel context.CancelFunc
+	done   chan error
+}
+
+func startScheduler(parent context.Context, engine *scheduler.Engine) *schedulerProcess {
+	ctx, cancel := context.WithCancel(parent)
+	process := &schedulerProcess{cancel: cancel, done: make(chan error, 1)}
+	go func() {
+		process.done <- engine.Run(ctx)
+	}()
+	return process
+}
+
+func (p *schedulerProcess) stop() error {
+	p.cancel()
+	return <-p.done
+}
+
+func rebuildScheduler(ctx context.Context, state *store.Store, cfg *config.Config, execution *jobRuntime) (*schedulerProcess, error) {
+	engine, err := scheduler.New(ctx, state, scheduler.Definitions(cfg.Jobs), execution.Trigger)
+	if err != nil {
+		return nil, err
+	}
+	return startScheduler(ctx, engine), nil
 }
 
 func reconcileConfig(ctx context.Context, state *store.Store, cfg *config.Config) error {
@@ -99,10 +179,16 @@ func jobSpecs(cfg *config.Config) ([]store.JobSpec, error) {
 			return nil, fmt.Errorf("encode job %q: %w", id, err)
 		}
 		digest := sha256.Sum256(snapshot)
+		scheduleSnapshot, err := json.Marshal(job.Schedule)
+		if err != nil {
+			return nil, fmt.Errorf("encode schedule for job %q: %w", id, err)
+		}
+		scheduleDigest := sha256.Sum256(scheduleSnapshot)
 		specs = append(specs, store.JobSpec{
-			ID:         id,
-			ConfigHash: hex.EncodeToString(digest[:]),
-			ConfigJSON: snapshot,
+			ID:           id,
+			ConfigHash:   hex.EncodeToString(digest[:]),
+			ScheduleHash: hex.EncodeToString(scheduleDigest[:]),
+			ConfigJSON:   snapshot,
 		})
 	}
 	return specs, nil
