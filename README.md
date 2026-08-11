@@ -5,7 +5,7 @@
 The project is Linux-first. Its scheduler and execution engine are designed to remain independent from systemd; systemd will supervise one long-running `promptd` process.
 
 > [!IMPORTANT]
-> `promptd` is in early development. The current bootstrap validates configuration and provides the daemon lifecycle. Scheduling, execution history, agent runners, and installation automation are the next milestones.
+> `promptd` is in early development. The daemon currently validates configuration, persists registered jobs, and maintains run history in SQLite. Scheduling, process execution, agent runners, and installation automation are the next milestones.
 
 ## Why promptd?
 
@@ -55,10 +55,10 @@ systemd / launchd / container runtime
 ```text
 promptd version
 promptd validate --config path/to/config.yaml
-promptd daemon --config path/to/config.yaml
+promptd daemon --config path/to/config.yaml --state path/to/promptd.db
 ```
 
-The daemon reloads its configuration on `SIGHUP`. An invalid reload is rejected while the last valid configuration remains active.
+The daemon reloads its configuration on `SIGHUP`. An invalid reload is rejected while the last valid configuration remains active. Its default per-user state database is `~/.local/state/promptd/promptd.db` on Linux.
 
 ## Build from source
 
@@ -125,7 +125,7 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] Go project and CLI skeleton
 - [x] Strict YAML configuration validation
 - [x] Daemon lifecycle and safe configuration reload
-- [ ] SQLite state and run history
+- [x] SQLite state and run history
 - [ ] Process-group supervisor and timeouts
 - [ ] Command and Codex runners
 - [ ] Popular agent runners, starting with Claude Code

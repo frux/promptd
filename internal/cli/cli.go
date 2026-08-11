@@ -14,6 +14,7 @@ import (
 	"github.com/frux/promptd/internal/buildinfo"
 	"github.com/frux/promptd/internal/config"
 	"github.com/frux/promptd/internal/daemon"
+	"github.com/frux/promptd/internal/store"
 )
 
 const usage = `promptd schedules prompts and agent commands.
@@ -77,6 +78,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	configPath := flags.String("config", defaultConfigPath(stderr), "path to config file")
+	statePath := flags.String("state", defaultStatePath(stderr), "path to SQLite state database")
 	logFormat := flags.String("log-format", "text", "log format: text or json")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -99,11 +101,20 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := daemon.Run(ctx, *configPath, slog.New(handler)); err != nil {
+	if err := daemon.Run(ctx, *configPath, *statePath, slog.New(handler)); err != nil {
 		fmt.Fprintf(stderr, "daemon failed: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func defaultStatePath(stderr io.Writer) string {
+	path, err := store.DefaultPath()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: cannot resolve default state path: %v\n", err)
+		return "promptd.db"
+	}
+	return path
 }
 
 func defaultConfigPath(stderr io.Writer) string {
