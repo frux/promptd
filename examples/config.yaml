@@ -1,0 +1,17 @@
+version: 1
+
+jobs:
+  daily-report:
+    schedule:
+      cron: "0 9 * * 1-5"
+      timezone: Asia/Yekaterinburg
+
+    agent:
+      type: codex
+      prompt_file: prompts/daily-report.md
+
+    run:
+      working_directory: ..
+      timeout: 20m
+      overlap: skip
+      misfire: run_once
