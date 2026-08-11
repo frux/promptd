@@ -175,6 +175,50 @@ jobs:
 	}
 }
 
+func TestLoadGeminiDefaultsToPlan(t *testing.T) {
+	path := writeConfig(t, `
+version: 1
+jobs:
+  review:
+    schedule:
+      every: 1h
+    agent:
+      type: gemini
+      prompt: Review the repository.
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	agent := cfg.Jobs["review"].Agent
+	if agent.ApprovalMode != "plan" {
+		t.Fatalf("approval mode = %q, want plan", agent.ApprovalMode)
+	}
+}
+
+func TestLoadRejectsUnsafeGeminiOptions(t *testing.T) {
+	for _, options := range []string{
+		"approval_mode: default",
+		"sandbox: disabled",
+		"allowed_tools: [\"run_shell_command(git,status)\"]",
+	} {
+		path := writeConfig(t, `
+version: 1
+jobs:
+  broken:
+    schedule:
+      every: 5m
+    agent:
+      type: gemini
+      prompt: Hello
+      `+options)
+		if _, err := Load(path); err == nil {
+			t.Fatalf("options %q accepted", options)
+		}
+	}
+}
+
 func TestLoadResolvesRelativeFiles(t *testing.T) {
 	path := writeConfig(t, `
 version: 1

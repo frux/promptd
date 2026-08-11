@@ -19,6 +19,7 @@ type Service struct {
 	executor     Executor
 	codexBinary  string
 	claudeBinary string
+	geminiBinary string
 }
 
 type Option func(*Service)
@@ -35,6 +36,12 @@ func WithClaudeBinary(path string) Option {
 	}
 }
 
+func WithGeminiBinary(path string) Option {
+	return func(service *Service) {
+		service.geminiBinary = path
+	}
+}
+
 func New(executor Executor, options ...Option) *Service {
 	if executor == nil {
 		executor = supervisor.New()
@@ -43,6 +50,7 @@ func New(executor Executor, options ...Option) *Service {
 		executor:     executor,
 		codexBinary:  "codex",
 		claudeBinary: "claude",
+		geminiBinary: "gemini",
 	}
 	for _, option := range options {
 		option(service)
@@ -86,9 +94,55 @@ func (s *Service) invocation(agent config.Agent) ([]string, io.Reader, error) {
 		return s.codexInvocation(agent)
 	case "claude":
 		return s.claudeInvocation(agent)
+	case "gemini":
+		return s.geminiInvocation(agent)
 	default:
 		return nil, nil, fmt.Errorf("unsupported agent type %q", agent.Type)
 	}
+}
+
+func (s *Service) geminiInvocation(agent config.Agent) ([]string, io.Reader, error) {
+	if strings.TrimSpace(s.geminiBinary) == "" {
+		return nil, nil, fmt.Errorf("Gemini binary is empty")
+	}
+	prompt, err := promptForAgent(agent)
+	if err != nil {
+		return nil, nil, err
+	}
+	approvalMode := agent.ApprovalMode
+	if approvalMode == "" {
+		approvalMode = "plan"
+	}
+	switch approvalMode {
+	case "plan", "auto_edit", "yolo":
+	default:
+		return nil, nil, fmt.Errorf("unsupported Gemini approval mode %q", approvalMode)
+	}
+
+	command := []string{
+		s.geminiBinary,
+		"--skip-trust",
+		"--output-format", "text",
+		"--approval-mode", approvalMode,
+	}
+	if agent.Sandbox == "enabled" {
+		command = append(command, "--sandbox")
+	} else if agent.Sandbox != "" {
+		return nil, nil, fmt.Errorf("unsupported Gemini sandbox %q", agent.Sandbox)
+	}
+	if len(agent.AllowedTools) != 0 {
+		for _, tool := range agent.AllowedTools {
+			if strings.Contains(tool, ",") {
+				return nil, nil, fmt.Errorf("Gemini allowed tool %q contains a comma", tool)
+			}
+		}
+		command = append(command, "--allowed-tools", strings.Join(agent.AllowedTools, ","))
+	}
+	if agent.Model != "" {
+		command = append(command, "--model", agent.Model)
+	}
+	command = append(command, "--prompt", prompt)
+	return command, nil, nil
 }
 
 func (s *Service) claudeInvocation(agent config.Agent) ([]string, io.Reader, error) {

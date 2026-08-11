@@ -23,6 +23,7 @@ const (
 	defaultMisfire      = "skip"
 	defaultCodexSandbox = "read-only"
 	defaultClaudeMode   = "dontAsk"
+	defaultGeminiMode   = "plan"
 )
 
 var jobIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -52,6 +53,7 @@ type Agent struct {
 	Model          string   `yaml:"model,omitempty"`
 	Sandbox        string   `yaml:"sandbox,omitempty"`
 	PermissionMode string   `yaml:"permission_mode,omitempty"`
+	ApprovalMode   string   `yaml:"approval_mode,omitempty"`
 	AllowedTools   []string `yaml:"allowed_tools,omitempty"`
 	Bare           bool     `yaml:"bare,omitempty"`
 }
@@ -128,6 +130,9 @@ func (c *Config) applyDefaults() {
 		if job.Agent.Type == "claude" && job.Agent.PermissionMode == "" {
 			job.Agent.PermissionMode = defaultClaudeMode
 		}
+		if job.Agent.Type == "gemini" && job.Agent.ApprovalMode == "" {
+			job.Agent.ApprovalMode = defaultGeminiMode
+		}
 		c.Jobs[id] = job
 	}
 }
@@ -190,8 +195,8 @@ func validateJob(id string, job Job) error {
 		if err := validatePromptAgent(prefix, "codex", job.Agent); err != nil {
 			return err
 		}
-		if job.Agent.PermissionMode != "" || len(job.Agent.AllowedTools) != 0 || job.Agent.Bare {
-			return fmt.Errorf("%s.agent: permission_mode, allowed_tools, and bare are not allowed for codex", prefix)
+		if job.Agent.PermissionMode != "" || job.Agent.ApprovalMode != "" || len(job.Agent.AllowedTools) != 0 || job.Agent.Bare {
+			return fmt.Errorf("%s.agent: permission_mode, approval_mode, allowed_tools, and bare are not allowed for codex", prefix)
 		}
 		if job.Agent.Model != strings.TrimSpace(job.Agent.Model) {
 			return fmt.Errorf("%s.agent.model: must not have surrounding whitespace", prefix)
@@ -208,6 +213,9 @@ func validateJob(id string, job Job) error {
 		if job.Agent.Sandbox != "" {
 			return fmt.Errorf("%s.agent.sandbox: not allowed for claude", prefix)
 		}
+		if job.Agent.ApprovalMode != "" {
+			return fmt.Errorf("%s.agent.approval_mode: not allowed for claude", prefix)
+		}
 		if job.Agent.Model != strings.TrimSpace(job.Agent.Model) {
 			return fmt.Errorf("%s.agent.model: must not have surrounding whitespace", prefix)
 		}
@@ -221,6 +229,31 @@ func validateJob(id string, job Job) error {
 				return fmt.Errorf("%s.agent.allowed_tools[%d]: must be a non-empty value without surrounding whitespace", prefix, index)
 			}
 		}
+	case "gemini":
+		if err := validatePromptAgent(prefix, "gemini", job.Agent); err != nil {
+			return err
+		}
+		if job.Agent.PermissionMode != "" || job.Agent.Bare {
+			return fmt.Errorf("%s.agent: permission_mode and bare are not allowed for gemini", prefix)
+		}
+		if job.Agent.Model != strings.TrimSpace(job.Agent.Model) {
+			return fmt.Errorf("%s.agent.model: must not have surrounding whitespace", prefix)
+		}
+		switch job.Agent.ApprovalMode {
+		case "plan", "auto_edit", "yolo":
+		default:
+			return fmt.Errorf("%s.agent.approval_mode: expected plan, auto_edit, or yolo", prefix)
+		}
+		switch job.Agent.Sandbox {
+		case "", "enabled":
+		default:
+			return fmt.Errorf("%s.agent.sandbox: expected enabled when set for gemini", prefix)
+		}
+		for index, tool := range job.Agent.AllowedTools {
+			if strings.TrimSpace(tool) == "" || tool != strings.TrimSpace(tool) || strings.Contains(tool, ",") {
+				return fmt.Errorf("%s.agent.allowed_tools[%d]: must be non-empty, comma-free, and have no surrounding whitespace", prefix, index)
+			}
+		}
 	case "command":
 		if len(job.Agent.Command) == 0 || strings.TrimSpace(job.Agent.Command[0]) == "" {
 			return fmt.Errorf("%s.agent.command: command agent requires a non-empty command", prefix)
@@ -228,11 +261,11 @@ func validateJob(id string, job Job) error {
 		if strings.TrimSpace(job.Agent.Prompt) != "" || job.Agent.PromptFile != "" {
 			return fmt.Errorf("%s.agent: prompt and prompt_file are not allowed for command", prefix)
 		}
-		if job.Agent.Model != "" || job.Agent.Sandbox != "" || job.Agent.PermissionMode != "" || len(job.Agent.AllowedTools) != 0 || job.Agent.Bare {
+		if job.Agent.Model != "" || job.Agent.Sandbox != "" || job.Agent.PermissionMode != "" || job.Agent.ApprovalMode != "" || len(job.Agent.AllowedTools) != 0 || job.Agent.Bare {
 			return fmt.Errorf("%s.agent: agent-specific options are not allowed for command", prefix)
 		}
 	default:
-		return fmt.Errorf("%s.agent.type: expected codex, claude, or command, got %q", prefix, job.Agent.Type)
+		return fmt.Errorf("%s.agent.type: expected codex, claude, gemini, or command, got %q", prefix, job.Agent.Type)
 	}
 
 	if job.Run.Timeout.Value() <= 0 {

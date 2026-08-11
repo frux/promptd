@@ -168,6 +168,56 @@ func TestClaudeRunnerDefaultsToDontAsk(t *testing.T) {
 	}
 }
 
+func TestGeminiRunnerUsesHeadlessApprovalContract(t *testing.T) {
+	executor := &recordingExecutor{}
+	job := config.Job{
+		Agent: config.Agent{
+			Type:         "gemini",
+			Prompt:       "Fix the tests.",
+			Model:        "gemini-test",
+			ApprovalMode: "auto_edit",
+			Sandbox:      "enabled",
+			AllowedTools: []string{"read_file", "replace"},
+		},
+		Run: config.Run{Timeout: config.Duration(time.Minute)},
+	}
+
+	_, err := New(executor, WithGeminiBinary("/opt/gemini")).Run(context.Background(), job, nil)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	wantCommand := []string{
+		"/opt/gemini", "--skip-trust", "--output-format", "text",
+		"--approval-mode", "auto_edit", "--sandbox",
+		"--allowed-tools", "read_file,replace", "--model", "gemini-test",
+		"--prompt", "Fix the tests.",
+	}
+	if !reflect.DeepEqual(executor.spec.Command, wantCommand) {
+		t.Fatalf("command = %#v, want %#v", executor.spec.Command, wantCommand)
+	}
+	if executor.spec.Stdin != nil {
+		t.Fatalf("stdin = %#v, want nil", executor.spec.Stdin)
+	}
+}
+
+func TestGeminiRunnerDefaultsToPlan(t *testing.T) {
+	executor := &recordingExecutor{}
+	job := config.Job{
+		Agent: config.Agent{Type: "gemini", Prompt: "Review this."},
+		Run:   config.Run{Timeout: config.Duration(time.Minute)},
+	}
+	if _, err := New(executor).Run(context.Background(), job, nil); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	want := []string{
+		"gemini", "--skip-trust", "--output-format", "text",
+		"--approval-mode", "plan", "--prompt", "Review this.",
+	}
+	if !reflect.DeepEqual(executor.spec.Command, want) {
+		t.Fatalf("command = %#v, want %#v", executor.spec.Command, want)
+	}
+}
+
 func TestRunnerOverlaysEnvironmentFile(t *testing.T) {
 	t.Setenv("PROMPTD_EXISTING", "old")
 	path := filepath.Join(t.TempDir(), "job.env")
@@ -225,6 +275,9 @@ func TestRunnerRejectsInvalidInputBeforeExecution(t *testing.T) {
 		{Type: "codex", Prompt: "Hello", PromptFile: "also.md"},
 		{Type: "codex", Prompt: "Hello", Sandbox: "root"},
 		{Type: "claude", Prompt: "Hello", PermissionMode: "interactive"},
+		{Type: "gemini", Prompt: "Hello", ApprovalMode: "default"},
+		{Type: "gemini", Prompt: "Hello", ApprovalMode: "plan", Sandbox: "disabled"},
+		{Type: "gemini", Prompt: "Hello", ApprovalMode: "plan", AllowedTools: []string{"tool,other"}},
 		{Type: "unknown"},
 	}
 	for _, agent := range tests {

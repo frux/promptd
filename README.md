@@ -5,7 +5,7 @@
 The project is Linux-first. Its scheduler and execution engine are designed to remain independent from systemd; systemd will supervise one long-running `promptd` process.
 
 > [!IMPORTANT]
-> `promptd` is in early development. The daemon now schedules jobs, executes command, Codex, and Claude Code runners, stores run history in SQLite, exposes a local control API, and supports planned user/system systemd installation. Release publishing is the next milestone.
+> `promptd` is in early development. The daemon now schedules jobs, executes command, Codex, Claude Code, and Gemini CLI runners, stores run history in SQLite, exposes a local control API, and supports planned user/system systemd installation.
 
 ## Why promptd?
 
@@ -139,6 +139,17 @@ agent:
 
 Supported unattended permission modes are `dontAsk`, `acceptEdits`, `auto`, `plan`, and the explicitly dangerous `bypassPermissions`. Set `bare: true` for reproducible API-key-based automation; bare mode intentionally does not use Claude's saved subscription login.
 
+Gemini jobs use Google Gemini CLI's official [`--prompt` headless mode](https://geminicli.com/docs/cli/tutorials/automation/). They default to the read-only `plan` approval mode, force text output, and skip the interactive workspace-trust question for the explicitly configured working directory:
+
+```yaml
+agent:
+  type: gemini
+  prompt: Review the repository and propose a migration plan.
+  approval_mode: plan
+```
+
+Use `approval_mode: auto_edit` to permit edit tools or the explicitly dangerous `approval_mode: yolo` to auto-approve every tool. Set `sandbox: enabled` to pass Gemini's `--sandbox` flag explicitly. `allowed_tools` values are passed as the CLI's comma-separated allowlist, so individual entries may not contain commas.
+
 Environment files use a deliberately small dotenv-style subset: one `KEY=VALUE` per line, optional `export`, comments on their own lines, and single- or double-quoted values. Values are not expanded by a shell.
 
 See [`examples/config.yaml`](examples/config.yaml) for a complete example.
@@ -185,7 +196,7 @@ This follows GitHub's official [artifact attestation workflow](https://docs.gith
 - [x] Process-group supervisor and timeouts
 - [x] Command and Codex runners
 - [x] Claude Code runner
-- [ ] Additional popular agent runners
+- [x] Gemini CLI runner
 - [x] Cron/interval scheduler and runner orchestration
 - [x] Unix socket control API
 - [x] `promptd status` overview for all registered jobs
