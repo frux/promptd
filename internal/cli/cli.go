@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/frux/promptd/internal/config"
 	"github.com/frux/promptd/internal/control"
 	"github.com/frux/promptd/internal/daemon"
+	setupcmd "github.com/frux/promptd/internal/setup"
 	"github.com/frux/promptd/internal/store"
 )
 
@@ -32,6 +35,7 @@ Commands:
   validate   Validate a configuration file
   daemon     Run the promptd daemon
   status     Show all registered jobs
+  setup      Plan or apply a service installation
   help       Show this help
 `
 
@@ -55,10 +59,147 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "setup":
+		return runSetup(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+func runSetup(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	mode := flags.String("mode", string(setupcmd.ModeAuto), "installation mode: auto, user-systemd, system-systemd, or portable")
+	apply := flags.Bool("apply", false, "write files and activate the selected service")
+	force := flags.Bool("force", false, "replace an existing unmanaged promptd unit")
+	linger := flags.Bool("linger", true, "enable user lingering in user-systemd mode")
+	allowRoot := flags.Bool("allow-root", false, "allow a system service to execute scheduled agents as root")
+	serviceUID := flags.Int("service-uid", -1, "numeric UID for system-systemd mode (default: current UID)")
+	serviceGID := flags.Int("service-gid", -1, "numeric GID for system-systemd mode (default: current GID)")
+	serviceHome := flags.String("service-home", "", "HOME for system-systemd mode (default: current home)")
+	binaryPath := flags.String("binary", "", "stable path to the promptd executable (default: current executable)")
+	configPath := flags.String("config", defaultConfigPath(stderr), "path to config file")
+	statePath := flags.String("state", defaultStatePath(stderr), "path to SQLite state database")
+	logDir := flags.String("log-dir", "", "directory for per-run logs (default: next to state database)")
+	socketPath := flags.String("socket", "", "path to control socket (default: next to state database)")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "setup does not accept positional arguments")
+		return 2
+	}
+	if *serviceUID < -1 || *serviceGID < -1 || (*serviceUID >= 0) != (*serviceGID >= 0) {
+		fmt.Fprintln(stderr, "setup requires service-uid and service-gid together as non-negative numeric IDs")
+		return 2
+	}
+
+	ctx := context.Background()
+	environment, err := setupcmd.Inspect(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "setup failed: %v\n", err)
+		return 1
+	}
+	identityOverridden := *serviceUID >= 0 || *serviceGID >= 0 || *serviceHome != ""
+	if *serviceUID >= 0 {
+		environment.UID = *serviceUID
+	}
+	if *serviceGID >= 0 {
+		environment.GID = *serviceGID
+	}
+	if *serviceHome != "" {
+		environment.HomeDir = *serviceHome
+	}
+	resolvedLogDir := *logDir
+	if resolvedLogDir == "" {
+		resolvedLogDir = filepath.Join(filepath.Dir(*statePath), "logs")
+	}
+	resolvedSocketPath := *socketPath
+	if resolvedSocketPath == "" {
+		resolvedSocketPath = control.DefaultSocketPath(*statePath)
+	}
+	plan, err := setupcmd.BuildPlan(environment, setupcmd.Options{
+		Mode:         setupcmd.Mode(*mode),
+		BinaryPath:   *binaryPath,
+		ConfigPath:   *configPath,
+		StatePath:    *statePath,
+		LogDir:       resolvedLogDir,
+		SocketPath:   resolvedSocketPath,
+		EnableLinger: *linger,
+		Force:        *force,
+		AllowRoot:    *allowRoot,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "setup failed: %v\n", err)
+		return 1
+	}
+	if identityOverridden && plan.Mode != setupcmd.ModeSystemSystemd {
+		fmt.Fprintln(stderr, "setup failed: service identity options are only valid in system-systemd mode")
+		return 1
+	}
+	if err := writeSetupPlan(stdout, plan); err != nil {
+		fmt.Fprintf(stderr, "setup failed: write plan: %v\n", err)
+		return 1
+	}
+	if !*apply {
+		fmt.Fprintln(stdout, "\nDry run only. Re-run with --apply to perform these changes.")
+		return 0
+	}
+	if err := setupcmd.Apply(ctx, plan); err != nil {
+		fmt.Fprintf(stderr, "setup failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "\nSetup complete.")
+	return 0
+}
+
+func writeSetupPlan(output io.Writer, plan setupcmd.Plan) error {
+	if _, err := fmt.Fprintf(output, "Setup mode: %s\nReason: %s\n", plan.Mode, plan.Reason); err != nil {
+		return err
+	}
+	if len(plan.Files) != 0 {
+		if _, err := fmt.Fprintln(output, "\nFiles:"); err != nil {
+			return err
+		}
+		for _, file := range plan.Files {
+			action := "write"
+			if file.IfMissing {
+				action = "create if missing"
+			}
+			if _, err := fmt.Fprintf(output, "  - %s %s (mode %04o)\n", action, file.Path, file.Mode.Perm()); err != nil {
+				return err
+			}
+		}
+	}
+	if len(plan.Commands) != 0 {
+		if _, err := fmt.Fprintln(output, "\nCommands:"); err != nil {
+			return err
+		}
+		for _, command := range plan.Commands {
+			parts := make([]string, len(command.Args))
+			for index, argument := range command.Args {
+				parts[index] = strconv.Quote(argument)
+			}
+			if _, err := fmt.Fprintf(output, "  - %s\n    %s\n", command.Description, strings.Join(parts, " ")); err != nil {
+				return err
+			}
+		}
+	}
+	if len(plan.Notes) != 0 {
+		if _, err := fmt.Fprintln(output, "\nNotes:"); err != nil {
+			return err
+		}
+		for _, note := range plan.Notes {
+			if _, err := fmt.Fprintf(output, "  - %s\n", note); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {

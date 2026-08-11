@@ -174,6 +174,42 @@ func TestStatusPrefersRunningDaemon(t *testing.T) {
 	}
 }
 
+func TestSetupPortableDryRunAndApply(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config", "config.yaml")
+	common := []string{
+		"setup",
+		"--mode", "portable",
+		"--config", configPath,
+		"--state", filepath.Join(directory, "state", "promptd.db"),
+		"--log-dir", filepath.Join(directory, "state", "logs"),
+		"--socket", filepath.Join(directory, "state", "promptd.sock"),
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run(common, &stdout, &stderr); code != 0 {
+		t.Fatalf("dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Setup mode: portable") || !strings.Contains(stdout.String(), "Dry run only") {
+		t.Fatalf("dry-run output = %q", stdout.String())
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created config: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(append(common, "--apply"), &stdout, &stderr); code != 0 {
+		t.Fatalf("apply code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Setup complete") {
+		t.Fatalf("apply output = %q", stdout.String())
+	}
+	contents, err := os.ReadFile(configPath)
+	if err != nil || string(contents) != "version: 1\n\njobs: {}\n" {
+		t.Fatalf("config contents = %q, error = %v", contents, err)
+	}
+}
+
 func seedStatusStore(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()

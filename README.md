@@ -5,7 +5,7 @@
 The project is Linux-first. Its scheduler and execution engine are designed to remain independent from systemd; systemd will supervise one long-running `promptd` process.
 
 > [!IMPORTANT]
-> `promptd` is in early development. The daemon now schedules jobs, executes command, Codex, and Claude Code runners, stores run history in SQLite, writes per-run logs, and reports job status. The control API and installation automation are the next milestones.
+> `promptd` is in early development. The daemon now schedules jobs, executes command, Codex, and Claude Code runners, stores run history in SQLite, exposes a local control API, and supports planned user/system systemd installation. Release publishing is the next milestone.
 
 ## Why promptd?
 
@@ -143,17 +143,32 @@ Environment files use a deliberately small dotenv-style subset: one `KEY=VALUE` 
 
 See [`examples/config.yaml`](examples/config.yaml) for a complete example.
 
-## Installation direction
+## Setup and installation
 
-The intended installation experience is:
+`promptd setup` detects the best available supervision mode and prints every file and command it would use. It is a dry run unless `--apply` is passed:
 
 ```bash
-curl -fsSL https://promptd.dev/install.sh | sh
+promptd setup
+promptd setup --apply
 ```
 
-The shell script will only download and verify a release binary. The testable `promptd setup` command will inspect the host, recommend user-systemd, system-systemd, or portable mode, show the planned changes, and perform the selected installation.
+Auto mode selects:
 
-The bootstrap installer is not published yet. Do not use the command above until a signed release and installer are available.
+- `user-systemd` when the current user manager is reachable. The generated unit lives under `${XDG_CONFIG_HOME:-~/.config}/systemd/user`; setup uses the numeric UID when enabling linger so it also works for virtual users without a stable NSS name.
+- `system-systemd` when setup is running as root. Running scheduled agents as root is refused by default; provide a non-root numeric identity with `--service-uid`, `--service-gid`, and `--service-home`, or use the explicit `--allow-root` escape hatch.
+- `portable` outside Linux or when no usable systemd manager is available. This creates the initial config but leaves process supervision to the user or container runtime.
+
+The user unit is enabled under `default.target`; the system unit under `multi-user.target`. Both restart on failure, use an owner-only umask, preserve the installation-time `HOME` and `PATH`, and support `systemctl reload promptd` through `SIGHUP`. User lingering keeps the user manager alive after logout, as described by the official [`loginctl enable-linger` documentation](https://www.freedesktop.org/software/systemd/man/latest/loginctl.html).
+
+The intended release installation experience is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/frux/promptd/main/install.sh | sh
+```
+
+The POSIX shell bootstrap supports Linux amd64 and arm64, downloads a release archive over HTTPS, requires its SHA-256 sidecar, installs the binary atomically to `~/.local/bin`, prints the setup plan, and asks for confirmation through `/dev/tty`. Set `PROMPTD_SETUP=skip` for download-only installation or `PROMPTD_SETUP=apply` for non-interactive setup.
+
+Release assets are not published yet, so the curl command will not work until the first GitHub release. The checksum protects against corruption or a mismatched asset; signing and provenance are part of the release milestone.
 
 ## Roadmap to v0.1
 
@@ -168,8 +183,8 @@ The bootstrap installer is not published yet. Do not use the command above until
 - [x] Cron/interval scheduler and runner orchestration
 - [x] Unix socket control API
 - [x] `promptd status` overview for all registered jobs
-- [ ] `promptd setup` and verified shell bootstrap
-- [ ] User and system systemd integration
+- [x] `promptd setup` and checksum-verified shell bootstrap
+- [x] User and system systemd integration
 - [ ] Linux release artifacts and packages
 
 ## Development
