@@ -152,7 +152,7 @@ Agent fields:
 
 #### Codex
 
-Codex jobs use [`codex exec` non-interactive mode](https://developers.openai.com/codex/noninteractive). Prompts are passed over stdin, sessions are ephemeral, and interactive approvals are disabled. Jobs that must edit their workspace need an explicit sandbox opt-in:
+Codex jobs use [`codex exec` non-interactive mode](https://developers.openai.com/codex/noninteractive). Prompts are passed over stdin, sessions are ephemeral, and interactive approvals are disabled. `promptd` also passes `--skip-git-repo-check` so unattended jobs can use an explicitly configured working directory that is not a Git repository. The configured sandbox still controls filesystem access. Jobs that must edit their workspace need an explicit sandbox opt-in:
 
 ```yaml
 agent:

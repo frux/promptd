@@ -82,8 +82,9 @@ func TestCodexRunnerUsesNonInteractiveStdin(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	wantCommand := []string{
-		"/opt/codex", "--ask-for-approval", "never", "exec", "--color", "never",
-		"--ephemeral", "--sandbox", "workspace-write", "--model", "gpt-test", "-",
+		"/opt/codex", "--ask-for-approval", "never", "exec", "--skip-git-repo-check",
+		"--color", "never", "--ephemeral", "--sandbox", "workspace-write",
+		"--model", "gpt-test", "-",
 	}
 	if !reflect.DeepEqual(executor.spec.Command, wantCommand) {
 		t.Fatalf("command = %#v, want %#v", executor.spec.Command, wantCommand)

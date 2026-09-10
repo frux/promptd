@@ -206,6 +206,7 @@ func (s *Service) codexInvocation(agent config.Agent) ([]string, io.Reader, erro
 		s.codexBinary,
 		"--ask-for-approval", "never",
 		"exec",
+		"--skip-git-repo-check",
 		"--color", "never",
 		"--ephemeral",
 		"--sandbox", sandbox,
