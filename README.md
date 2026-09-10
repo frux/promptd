@@ -228,10 +228,27 @@ promptd version
 promptd validate --config path/to/config.yaml
 promptd daemon --config path/to/config.yaml --state path/to/promptd.db --log-dir path/to/logs --socket path/to/promptd.sock
 promptd status --state path/to/promptd.db
+promptd run <task-name>
 promptd setup
 ```
 
 Run `promptd <command> --help` for command-specific options.
+
+### Manual runs
+
+Run a configured task immediately, outside its schedule:
+
+```bash
+promptd run daily-report
+promptd run daily-report --state path/to/promptd.db
+promptd run daily-report --socket path/to/promptd.sock
+```
+
+The task name is its ID under `jobs` in the daemon's active configuration. A running daemon is required; `--state` only locates its control socket. Options can also precede the task name.
+
+The command returns once the daemon accepts the request, without waiting for the task to finish. Manual runs use the same timeout, environment, logs, and run history as scheduled runs, with `trigger = manual`. They do not change the next scheduled occurrence.
+
+The configured `run.overlap` policy still applies: `skip` skips a request while the task is running; `queue_one` allows one pending run shared by manual and scheduled requests. The command reports whether the request was accepted, queued, or skipped. Accepted and queued requests return exit code 0; skipped requests, unknown tasks, and daemon errors return 1. Invalid arguments return 2. Use `promptd status` to check the result after execution.
 
 ### Status
 
@@ -266,7 +283,7 @@ The default per-user paths on Linux are:
 | Per-run logs | `~/.local/state/promptd/logs/` |
 | Control socket | `~/.local/state/promptd/promptd.sock` |
 
-The versioned local control API exposes `GET /v1/status` over the Unix socket. The daemon creates the socket with mode `0600` and refuses to replace a regular file or an active socket.
+The versioned local control API exposes `GET /v1/status` and `POST /v1/jobs/{id}/run` over the Unix socket. The daemon creates the socket with mode `0600` and refuses to replace a regular file or an active socket.
 
 ## Supervision modes
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -62,4 +63,35 @@ func DefaultSocketPath(statePath string) string {
 		return statePath + ".sock"
 	}
 	return strings.TrimSuffix(statePath, extension) + ".sock"
+}
+
+// Run asks the daemon to execute a job without changing its schedule.
+// A successful response acknowledges the request, not completion of the job.
+func (c *Client) Run(ctx context.Context, jobID string) (RunResponse, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://promptd/v1/jobs/"+url.PathEscape(jobID)+"/run", nil)
+	if err != nil {
+		return RunResponse{}, fmt.Errorf("build control request: %w", err)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return RunResponse{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		return RunResponse{}, fmt.Errorf("control API returned %s: %s", response.Status, strings.TrimSpace(string(message)))
+	}
+	var result RunResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		return RunResponse{}, fmt.Errorf("decode control response: %w", err)
+	}
+	if result.Version != APIVersion {
+		return RunResponse{}, fmt.Errorf("unsupported control API version %d", result.Version)
+	}
+	switch result.Status {
+	case RunAccepted, RunQueued, RunSkipped:
+	default:
+		return RunResponse{}, fmt.Errorf("unsupported run status %q", result.Status)
+	}
+	return result, nil
 }

@@ -25,7 +25,7 @@ type Server struct {
 	done chan error
 }
 
-func Start(path string, provider statusProvider, logger *slog.Logger) (*Server, error) {
+func Start(path string, provider statusProvider, runJob func(string) (RunResponse, error), logger *slog.Logger) (*Server, error) {
 	if path == "" {
 		return nil, fmt.Errorf("control socket path is empty")
 	}
@@ -41,6 +41,31 @@ func Start(path string, provider statusProvider, logger *slog.Logger) (*Server, 
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/jobs/{id}/run", func(writer http.ResponseWriter, request *http.Request) {
+		if runJob == nil {
+			writeError(writer, http.StatusServiceUnavailable, "manual runs are unavailable")
+			return
+		}
+		response, err := runJob(request.PathValue("id"))
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrUnknownJob):
+				writeError(writer, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrStopping):
+				writeError(writer, http.StatusServiceUnavailable, err.Error())
+			default:
+				logger.Error("control run failed", "error", err)
+				writeError(writer, http.StatusInternalServerError, "cannot run job")
+			}
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.WriteHeader(http.StatusAccepted)
+		if err := json.NewEncoder(writer).Encode(response); err != nil {
+			logger.Error("control response failed", "error", err)
+		}
+	})
 	mux.HandleFunc("GET /v1/status", func(writer http.ResponseWriter, request *http.Request) {
 		statuses, err := provider.ListJobStatuses(request.Context())
 		if err != nil {

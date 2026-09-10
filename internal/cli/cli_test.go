@@ -139,7 +139,7 @@ func TestStatusPrefersRunningDaemon(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(socketDirectory) })
 	socketPath := filepath.Join(socketDirectory, "p.sock")
-	server, err := control.Start(socketPath, live, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := control.Start(socketPath, live, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

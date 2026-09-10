@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/frux/promptd/internal/config"
+	"github.com/frux/promptd/internal/control"
 	"github.com/frux/promptd/internal/runner"
 	"github.com/frux/promptd/internal/scheduler"
 	"github.com/frux/promptd/internal/store"
@@ -39,7 +40,12 @@ type jobRuntime struct {
 
 type jobActivity struct {
 	running bool
-	queued  *scheduler.Event
+	queued  *runEvent
+}
+
+type runEvent struct {
+	scheduler.Event
+	manual bool
 }
 
 const stateOperationTimeout = 5 * time.Second
@@ -89,16 +95,32 @@ func (r *jobRuntime) Replace(jobs map[string]config.Job) {
 }
 
 func (r *jobRuntime) Trigger(event scheduler.Event) {
+	if _, err := r.trigger(runEvent{Event: event}); err != nil {
+		r.logger.Warn("scheduled job rejected", "job", event.JobID, "error", err)
+	}
+}
+
+func (r *jobRuntime) RunJob(jobID string) (control.RunResponse, error) {
+	status, err := r.trigger(runEvent{
+		Event:  scheduler.Event{JobID: jobID, ScheduledAt: time.Now().UTC()},
+		manual: true,
+	})
+	if err != nil {
+		return control.RunResponse{}, err
+	}
+	return control.RunResponse{Version: control.APIVersion, JobID: jobID, Status: status}, nil
+}
+
+func (r *jobRuntime) trigger(event runEvent) (string, error) {
 	r.mu.Lock()
-	if r.closed {
+	if r.closed || r.ctx.Err() != nil {
 		r.mu.Unlock()
-		return
+		return "", control.ErrStopping
 	}
 	job, exists := r.jobs[event.JobID]
 	if !exists {
 		r.mu.Unlock()
-		r.logger.Warn("scheduled unknown job", "job", event.JobID)
-		return
+		return "", fmt.Errorf("job %q: %w", event.JobID, control.ErrUnknownJob)
 	}
 	activity := r.activity[event.JobID]
 	if activity == nil {
@@ -111,7 +133,7 @@ func (r *jobRuntime) Trigger(event scheduler.Event) {
 			activity.queued = &queued
 			r.mu.Unlock()
 			r.logger.Info("job occurrence queued", "job", event.JobID, "scheduled_at", event.ScheduledAt)
-			return
+			return control.RunQueued, nil
 		}
 		r.wg.Add(1)
 		r.mu.Unlock()
@@ -119,12 +141,13 @@ func (r *jobRuntime) Trigger(event scheduler.Event) {
 			defer r.wg.Done()
 			r.recordSkipped(event, "previous run is still active")
 		}()
-		return
+		return control.RunSkipped, nil
 	}
 	activity.running = true
 	r.wg.Add(1)
 	r.mu.Unlock()
 	go r.execute(job, event)
+	return control.RunAccepted, nil
 }
 
 func (r *jobRuntime) Shutdown() {
@@ -140,13 +163,13 @@ func (r *jobRuntime) Shutdown() {
 	})
 }
 
-func (r *jobRuntime) execute(job config.Job, event scheduler.Event) {
+func (r *jobRuntime) execute(job config.Job, event runEvent) {
 	defer r.complete(event.JobID)
 
 	record, err := r.createRun(store.NewRun{
 		JobID:       event.JobID,
 		Trigger:     eventTrigger(event),
-		ScheduledAt: &event.ScheduledAt,
+		ScheduledAt: event.scheduledAt(),
 	})
 	if err != nil {
 		r.logger.Error("create run record failed", "job", event.JobID, "error", err)
@@ -205,11 +228,11 @@ func (r *jobRuntime) failBeforeExecution(runID int64, jobID string, failure erro
 	}
 }
 
-func (r *jobRuntime) recordSkipped(event scheduler.Event, reason string) {
+func (r *jobRuntime) recordSkipped(event runEvent, reason string) {
 	record, err := r.createRun(store.NewRun{
 		JobID:       event.JobID,
 		Trigger:     eventTrigger(event),
-		ScheduledAt: &event.ScheduledAt,
+		ScheduledAt: event.scheduledAt(),
 	})
 	if err != nil {
 		r.logger.Error("create skipped run failed", "job", event.JobID, "error", err)
@@ -227,7 +250,7 @@ func (r *jobRuntime) recordSkipped(event scheduler.Event, reason string) {
 
 func (r *jobRuntime) complete(jobID string) {
 	var nextJob config.Job
-	var nextEvent scheduler.Event
+	var nextEvent runEvent
 	var startNext bool
 
 	r.mu.Lock()
@@ -288,7 +311,17 @@ func classifyResult(result supervisor.Result, err error) (store.RunStatus, strin
 	}
 }
 
-func eventTrigger(event scheduler.Event) string {
+func (event runEvent) scheduledAt() *time.Time {
+	if event.manual {
+		return nil
+	}
+	return &event.ScheduledAt
+}
+
+func eventTrigger(event runEvent) string {
+	if event.manual {
+		return "manual"
+	}
 	if event.Misfired {
 		return "misfire"
 	}

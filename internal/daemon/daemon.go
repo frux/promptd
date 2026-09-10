@@ -55,7 +55,7 @@ func Run(ctx context.Context, configPath, statePath, logDir, socketPath string, 
 	if err != nil {
 		return fmt.Errorf("initialize scheduler: %w", err)
 	}
-	controlServer, err := control.Start(socketPath, state, logger)
+	controlServer, err := control.Start(socketPath, state, execution.RunJob, logger)
 	if err != nil {
 		return fmt.Errorf("start control API: %w", err)
 	}
