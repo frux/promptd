@@ -35,6 +35,7 @@ Commands:
   validate   Validate a configuration file
   daemon     Run the promptd daemon
   status     Show all registered jobs
+  run        Run a task now without changing its schedule
   setup      Plan or apply a service installation
   help       Show this help
 `
@@ -59,12 +60,69 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "run":
+		return runTask(args[1:], stdout, stderr)
 	case "setup":
 		return runSetup(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+func runTask(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	statePath := flags.String("state", defaultStatePath(stderr), "path to SQLite state database (used to locate the control socket)")
+	socketPath := flags.String("socket", "", "path to daemon control socket (default: next to state database)")
+	flags.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: promptd run [options] <task-name>\n       promptd run <task-name> [options]")
+		flags.PrintDefaults()
+	}
+	// Accept the task name before options as well as flag's usual options-first form.
+	var taskName string
+	nameFirst := len(args) > 0 && !strings.HasPrefix(args[0], "-")
+	if nameFirst {
+		taskName, args = args[0], args[1:]
+	}
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if !nameFirst && flags.NArg() == 1 {
+		taskName = flags.Arg(0)
+	} else if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "run requires exactly one task name")
+		return 2
+	}
+	if strings.TrimSpace(taskName) == "" {
+		fmt.Fprintln(stderr, "run requires exactly one task name")
+		return 2
+	}
+	resolvedSocketPath := *socketPath
+	if resolvedSocketPath == "" {
+		resolvedSocketPath = control.DefaultSocketPath(*statePath)
+	}
+	response, err := control.NewClient(resolvedSocketPath).Run(context.Background(), taskName)
+	if err != nil {
+		fmt.Fprintf(stderr, "run failed: %v\n", err)
+		if errors.Is(err, control.ErrUnavailable) {
+			fmt.Fprintln(stderr, "manual runs require a running promptd daemon; check the service and --socket path")
+		}
+		return 1
+	}
+	switch response.Status {
+	case control.RunSkipped:
+		fmt.Fprintf(stderr, "job %q skipped: previous run is still active\n", taskName)
+		return 1
+	case control.RunQueued:
+		fmt.Fprintf(stdout, "job %q queued after the active run\n", taskName)
+	default:
+		fmt.Fprintf(stdout, "job %q accepted for execution\n", taskName)
+	}
+	return 0
 }
 
 func runSetup(args []string, stdout, stderr io.Writer) int {

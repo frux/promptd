@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,67 @@ import (
 
 	"github.com/frux/promptd/internal/store"
 )
+
+type emptyStatusProvider struct{}
+
+func (emptyStatusProvider) ListJobStatuses(context.Context) ([]store.JobStatus, error) {
+	return nil, nil
+}
+
+func TestServerAndClientRun(t *testing.T) {
+	for _, status := range []string{RunAccepted, RunQueued, RunSkipped} {
+		t.Run(status, func(t *testing.T) {
+			path := shortSocketPath(t)
+			requested := make(chan string, 1)
+			server, err := Start(path, emptyStatusProvider{}, func(id string) (RunResponse, error) {
+				requested <- id
+				return RunResponse{Version: APIVersion, JobID: id, Status: status}, nil
+			}, discardLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer shutdownServer(t, server)
+			response, err := NewClient(path).Run(context.Background(), "daily-report")
+			if err != nil || response.JobID != "daily-report" || response.Status != status || response.Version != APIVersion {
+				t.Fatalf("Run() = %#v, %v", response, err)
+			}
+			if id := <-requested; id != "daily-report" {
+				t.Fatalf("requested job = %q", id)
+			}
+		})
+	}
+}
+
+func TestRunErrorsAndMethod(t *testing.T) {
+	path := shortSocketPath(t)
+	server, err := Start(path, emptyStatusProvider{}, func(id string) (RunResponse, error) {
+		if id == "stopping" {
+			return RunResponse{}, ErrStopping
+		}
+		return RunResponse{}, ErrUnknownJob
+	}, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdownServer(t, server)
+	client := NewClient(path)
+	for id, want := range map[string]string{"missing": "404", "stopping": "503"} {
+		if _, err := client.Run(context.Background(), id); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Run(%q) error = %v, want %s", id, err, want)
+		}
+	}
+	response, err := client.http.Get("http://promptd/v1/jobs/report/run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET run status = %d", response.StatusCode)
+	}
+	if _, err := NewClient(path+".missing").Run(context.Background(), "report"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unavailable Run() error = %v", err)
+	}
+}
 
 func TestServerAndClientStatus(t *testing.T) {
 	ctx := context.Background()
@@ -34,7 +96,7 @@ func TestServerAndClientStatus(t *testing.T) {
 	}
 
 	socketPath := shortSocketPath(t)
-	server, err := Start(socketPath, state, discardLogger())
+	server, err := Start(socketPath, state, nil, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,13 +130,13 @@ func TestStartRejectsActiveSocket(t *testing.T) {
 	}
 	defer state.Close()
 	socketPath := shortSocketPath(t)
-	server, err := Start(socketPath, state, discardLogger())
+	server, err := Start(socketPath, state, nil, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer shutdownServer(t, server)
 
-	if _, err := Start(socketPath, state, discardLogger()); err == nil || !strings.Contains(err.Error(), "already in use") {
+	if _, err := Start(socketPath, state, nil, discardLogger()); err == nil || !strings.Contains(err.Error(), "already in use") {
 		t.Fatalf("second Start() error = %v", err)
 	}
 }
@@ -90,7 +152,7 @@ func TestStartDoesNotReplaceRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	if _, err := Start(path, state, discardLogger()); err == nil || !strings.Contains(err.Error(), "is not a socket") {
+	if _, err := Start(path, state, nil, discardLogger()); err == nil || !strings.Contains(err.Error(), "is not a socket") {
 		t.Fatalf("Start() error = %v", err)
 	}
 	contents, err := os.ReadFile(path)
@@ -119,7 +181,7 @@ func TestStartRemovesStaleSocket(t *testing.T) {
 		t.Fatalf("stale socket missing: %v", err)
 	}
 
-	server, err := Start(path, state, discardLogger())
+	server, err := Start(path, state, nil, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

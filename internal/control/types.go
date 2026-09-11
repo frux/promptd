@@ -1,12 +1,30 @@
 package control
 
 import (
+	"errors"
 	"time"
 
 	"github.com/frux/promptd/internal/store"
 )
 
 const APIVersion = 1
+
+var (
+	ErrUnknownJob = errors.New("job is not in the active configuration")
+	ErrStopping   = errors.New("daemon is stopping")
+)
+
+type RunResponse struct {
+	Version int    `json:"version"`
+	JobID   string `json:"job_id"`
+	Status  string `json:"status"`
+}
+
+const (
+	RunAccepted = "accepted"
+	RunQueued   = "queued"
+	RunSkipped  = "skipped"
+)
 
 type StatusResponse struct {
 	Version int         `json:"version"`
