@@ -129,7 +129,7 @@ Every job uses one runner selected by `type`:
 
 | `type` | Required fields | Optional fields | Safety default |
 | --- | --- | --- | --- |
-| `codex` | Exactly one of `prompt`, `prompt_file` | `model`, `sandbox` | `sandbox: read-only` |
+| `codex` | Exactly one of `prompt`, `prompt_file` | `model`, `sandbox`, `success_marker` | `sandbox: read-only` |
 | `claude` | Exactly one of `prompt`, `prompt_file` | `model`, `permission_mode`, `allowed_tools`, `bare` | `permission_mode: dontAsk` |
 | `gemini` | Exactly one of `prompt`, `prompt_file` | `model`, `approval_mode`, `allowed_tools`, `sandbox` | `approval_mode: plan` |
 | `command` | `command` | — | Direct execution without a shell |
@@ -143,6 +143,7 @@ Agent fields:
 | `prompt_file` | Codex, Claude, Gemini | Path to a non-empty prompt file. Mutually exclusive with `prompt`. |
 | `command` | Command | YAML list containing the executable followed by its arguments. |
 | `model` | Codex, Claude, Gemini | Optional model override passed to the selected CLI. |
+| `success_marker` | Codex | Optional exact first line required in the final answer for a successful run. |
 | `sandbox` | Codex | `read-only`, `workspace-write`, or `danger-full-access`. |
 | `sandbox` | Gemini | Set to `enabled` to pass Gemini's sandbox flag; omit otherwise. |
 | `permission_mode` | Claude | `dontAsk`, `acceptEdits`, `auto`, `plan`, or `bypassPermissions`. |
@@ -160,6 +161,13 @@ agent:
   prompt: Fix the failing tests and verify the result.
   sandbox: workspace-write
 ```
+
+For workflows that can stop with an explanation while Codex still exits with code zero, set
+`agent.success_marker`, for example `DAILY_BRIEF_DELIVERED`. Promptd adds a completion instruction
+to the prompt and captures the final answer using `--output-last-message` in a fresh private file.
+The run fails unless its first line exactly matches the marker. Progress output does not count.
+Nonzero exits, timeouts, and cancellation keep their original status. This checks the agent's
+completion report; it does not independently verify remote side effects.
 
 #### Claude Code
 

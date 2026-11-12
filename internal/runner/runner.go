@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -69,6 +70,23 @@ func (s *Service) Run(ctx context.Context, job config.Job, output io.Writer) (su
 		return supervisor.Result{ExitCode: -1}, err
 	}
 
+	var resultPath string
+	if job.Agent.SuccessMarker != "" {
+		if job.Agent.Type != "codex" {
+			return supervisor.Result{ExitCode: -1}, fmt.Errorf("success_marker requires a codex agent")
+		}
+		file, err := os.CreateTemp("", "promptd-codex-result-*")
+		if err != nil {
+			return supervisor.Result{ExitCode: -1}, fmt.Errorf("create Codex result file: %w", err)
+		}
+		resultPath = file.Name()
+		defer os.Remove(resultPath)
+		if err := file.Close(); err != nil {
+			return supervisor.Result{ExitCode: -1}, fmt.Errorf("close Codex result file: %w", err)
+		}
+		command = append(command[:len(command)-1], "--output-last-message", resultPath, "-")
+	}
+
 	result, err := s.executor.Run(ctx, supervisor.Spec{
 		Command:     command,
 		Directory:   job.Run.WorkingDirectory,
@@ -80,7 +98,25 @@ func (s *Service) Run(ctx context.Context, job config.Job, output io.Writer) (su
 	if err != nil {
 		return result, fmt.Errorf("run %s agent: %w", job.Agent.Type, err)
 	}
+	if resultPath != "" && result.ExitCode == 0 && !result.TimedOut && !result.Canceled {
+		if err := verifySuccessMarker(resultPath, job.Agent.SuccessMarker); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+func verifySuccessMarker(path, marker string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("read Codex final result: %w", err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() || scanner.Text() != marker {
+		return fmt.Errorf("Codex exited with code 0 without the required success marker in its final answer")
+	}
+	return nil
 }
 
 func (s *Service) invocation(agent config.Agent) ([]string, io.Reader, error) {
@@ -191,6 +227,9 @@ func (s *Service) codexInvocation(agent config.Agent) ([]string, io.Reader, erro
 	prompt, err := promptForAgent(agent)
 	if err != nil {
 		return nil, nil, err
+	}
+	if agent.SuccessMarker != "" {
+		prompt += fmt.Sprintf("\n\nCompletion contract: Only after every requested step has completed successfully, start your final answer with this exact line:\n%s\nThen provide the requested completion summary. If any step fails, is blocked, or remains incomplete, explain the failure without that success marker.\n", agent.SuccessMarker)
 	}
 	sandbox := agent.Sandbox
 	if sandbox == "" {
