@@ -59,6 +59,29 @@ jobs: {}
 	}
 }
 
+func TestSuccessMarkerConfig(t *testing.T) {
+	for _, tc := range []struct {
+		agent  string
+		marker string
+		valid  bool
+	}{
+		{"codex", "DELIVERED", true},
+		{"codex", " DELIVERED", false},
+		{"codex", "DELIVERED\nMORE", false},
+		{"claude", "DELIVERED", false},
+	} {
+		job := Job{
+			Schedule: Schedule{Cron: "0 9 * * *", Timezone: "UTC"},
+			Agent:    Agent{Type: tc.agent, Prompt: "Report.", Sandbox: "read-only", SuccessMarker: tc.marker},
+			Run:      Run{Timeout: Duration(time.Minute), Overlap: "skip", Misfire: "skip"},
+		}
+		err := validateJob("report", job)
+		if (err == nil) != tc.valid {
+			t.Errorf("%s marker %q: error = %v", tc.agent, tc.marker, err)
+		}
+	}
+}
+
 func TestLoadRejectsInvalidCron(t *testing.T) {
 	path := writeConfig(t, `
 version: 1

@@ -56,6 +56,7 @@ type Agent struct {
 	ApprovalMode   string   `yaml:"approval_mode,omitempty"`
 	AllowedTools   []string `yaml:"allowed_tools,omitempty"`
 	Bare           bool     `yaml:"bare,omitempty"`
+	SuccessMarker  string   `yaml:"success_marker,omitempty" json:",omitempty"`
 }
 
 type Run struct {
@@ -172,6 +173,14 @@ func (c *Config) Validate() error {
 
 func validateJob(id string, job Job) error {
 	prefix := "jobs." + id
+	if job.Agent.SuccessMarker != "" {
+		if job.Agent.Type != "codex" {
+			return fmt.Errorf("%s.agent.success_marker: only supported for codex", prefix)
+		}
+		if strings.TrimSpace(job.Agent.SuccessMarker) != job.Agent.SuccessMarker || strings.ContainsAny(job.Agent.SuccessMarker, "\r\n") {
+			return fmt.Errorf("%s.agent.success_marker: expected one non-empty line without surrounding whitespace", prefix)
+		}
+	}
 
 	hasCron := strings.TrimSpace(job.Schedule.Cron) != ""
 	hasEvery := job.Schedule.Every != 0
