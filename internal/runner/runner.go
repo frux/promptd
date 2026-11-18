@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/frux/promptd/internal/config"
@@ -75,7 +76,15 @@ func (s *Service) Run(ctx context.Context, job config.Job, output io.Writer) (su
 		if job.Agent.Type != "codex" {
 			return supervisor.Result{ExitCode: -1}, fmt.Errorf("success_marker requires a codex agent")
 		}
-		file, err := os.CreateTemp("", "promptd-codex-result-*")
+		tempDir, err := filepath.Abs(os.TempDir())
+		if err != nil {
+			return supervisor.Result{ExitCode: -1}, fmt.Errorf("resolve Codex result directory: %w", err)
+		}
+		tempDir, err = filepath.EvalSymlinks(tempDir)
+		if err != nil {
+			return supervisor.Result{ExitCode: -1}, fmt.Errorf("resolve Codex result directory: %w", err)
+		}
+		file, err := os.CreateTemp(tempDir, "promptd-codex-result-*")
 		if err != nil {
 			return supervisor.Result{ExitCode: -1}, fmt.Errorf("create Codex result file: %w", err)
 		}

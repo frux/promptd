@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,5 +66,39 @@ func TestCodexCompletionContract(t *testing.T) {
 				t.Fatalf("temporary final-result file was not removed: %v", err)
 			}
 		})
+	}
+}
+
+func TestCodexResultPathResolvesTempDirectorySymlinks(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "real")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, link)
+	}
+
+	executor := &completionExecutor{answer: "DELIVERED\nDone."}
+	job := config.Job{Agent: config.Agent{Type: "codex", Prompt: "Deliver a report.", SuccessMarker: "DELIVERED"}}
+	if _, err := New(executor).Run(context.Background(), job, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Dir(executor.path); got != target {
+		t.Fatalf("Codex result directory = %q, want resolved directory %q", got, target)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary result files remain: %v", entries)
 	}
 }
